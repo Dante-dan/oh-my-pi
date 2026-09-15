@@ -314,6 +314,7 @@ async function resolveInternalUrlToPath(
 			pathOnly: true,
 			sessionFile,
 			sessionId,
+			localProtocolOptions: localOptions,
 			agentRegistry,
 			rules,
 		});

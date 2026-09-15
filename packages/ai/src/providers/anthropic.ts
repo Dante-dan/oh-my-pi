@@ -112,6 +112,7 @@ import {
 	claudeCodeVersion,
 	claudeToolPrefix,
 	claudeCodeUserAgent,
+	ompSystemInstruction,
 } from "./claude-code-fingerprint";
 import {
 	buildCopilotDynamicHeaders,
@@ -3507,6 +3508,7 @@ export function buildAnthropicSystemBlocks(
 				text: claudeCodeSystemInstruction,
 				cache_control: cacheControl ? cloneAnthropicCacheControl(cacheControl) : { type: "ephemeral" },
 			},
+			{ type: "text", text: ompSystemInstruction },
 		];
 
 		for (const instruction of trimmedInstructions) {

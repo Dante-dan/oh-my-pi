@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Session teardown now anchors its exit marker to the journal's current persisted tail, so killing a stale process cannot make `--resume` select its dead-end branch over turns written by another client ([#12242](https://github.com/can1357/oh-my-pi/issues/12242)).
+- Session teardown now anchors its exit marker to the journal's current persisted tail, so killing a stale process cannot make `--resume` select its dead-end branch over turns written by another client ([#12253](https://github.com/can1357/oh-my-pi/pull/12253) by [@Dante-dan](https://github.com/Dante-dan)).
 
 ## [18.2.1] - 2026-09-15
 

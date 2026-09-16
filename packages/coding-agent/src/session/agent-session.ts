@@ -4831,7 +4831,6 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
-		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
 		this.#cancelFatalRecoveryHint?.();
@@ -4963,6 +4962,9 @@ export class AgentSession {
 		// rewrites at their commit guard; hot-path appends drained above are
 		// already durable, and close() (scheduled post-seal) still flushes and
 		// closes the writer.
+		// Read the shared tail only after maintenance/event handlers have drained.
+		// No rewrite may use this refreshed size token with our stale snapshot.
+		this.#recordSessionExit(options.reason ?? "dispose");
 		this.sessionManager.seal();
 		await this.sessionManager.close();
 

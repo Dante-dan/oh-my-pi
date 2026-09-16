@@ -28,6 +28,8 @@ export interface SessionStorageBackend {
 	init(): Promise<void>;
 	loadIndex(): Promise<Iterable<SessionStorageIndexEntry>>;
 	readFull(path: string): Promise<string | null>;
+	/** Atomically read a bounded UTF-8 tail and its full byte size. */
+	readTail?(path: string, suffixBytes: number): Promise<{ tail: string; size: number }>;
 	readSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]>;
 	/**
 	 * Replace content, atomically rejecting when the shared backend's current
@@ -223,19 +225,36 @@ export class IndexedSessionStorage implements SessionStorage {
 				// The backend CAS closes the gap between reading another client's tail
 				// and publishing. Retry only contention, never ambiguous I/O failures.
 				for (let attempt = 0; ; attempt++) {
-					const content = await this.#backend.readFull(path);
-					if (content === null) throw enoent(path);
-					const trimmed = content.trimEnd();
+					let tail: string;
+					let size: number;
+					if (this.#backend.readTail) {
+						let limit = 64 * 1024;
+						for (;;) {
+							({ tail, size } = await this.#backend.readTail(path, limit));
+							// A window may begin inside UTF-8 or a JSON line. Only use
+							// a complete final line, growing for a single large entry.
+							if (size <= limit || tail.trimEnd().includes("\n")) break;
+							limit *= 2;
+						}
+					} else {
+						// Compatibility fallback for third-party backends without
+						// atomic tail/size reads. SQL and Redis use bounded reads.
+						const content = await this.#backend.readFull(path);
+						if (content === null) throw enoent(path);
+						tail = content;
+						size = byteLength(content);
+					}
+					const trimmed = tail.trimEnd();
 					const built = build(trimmed.slice(trimmed.lastIndexOf("\n") + 1));
-					const next = content + (content.endsWith("\n") ? "" : "\n") + built.content;
+					const appended = (tail.endsWith("\n") ? "" : "\n") + built.content;
 					const mtimeMs = this.#allocMtimeMs();
 					try {
-						await this.#backend.append(path, next.slice(content.length), mtimeMs, byteLength(content));
+						await this.#backend.append(path, appended, mtimeMs, size);
 					} catch (error) {
 						if (error instanceof SessionWriteConflictError && attempt < 7) continue;
 						throw error;
 					}
-					this.#setIndex(path, byteLength(next), mtimeMs);
+					this.#setIndex(path, size + byteLength(appended), mtimeMs);
 					value = built.value;
 					return;
 				}

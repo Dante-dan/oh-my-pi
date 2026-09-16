@@ -67,6 +67,10 @@ else
 end
 return {1, string.len(ARGV[1])}`;
 
+const READ_TAIL_SCRIPT = `-- OMP_READ_TAIL
+if redis.call("EXISTS", KEYS[1]) == 0 then return {-1, ""} end
+return {redis.call("STRLEN", KEYS[1]), redis.call("GETRANGE", KEYS[1], -tonumber(ARGV[1]), -1)}`;
+
 const APPEND_SCRIPT = `-- OMP_APPEND
 if ARGV[4] ~= "" then
 	local actual = redis.call("EXISTS", KEYS[1]) == 1 and redis.call("STRLEN", KEYS[1]) or -1
@@ -188,6 +192,14 @@ class RedisSessionStorageBackend implements SessionStorageBackend {
 		const head = prefixBytes > 0 ? this.#client.getrange(key, 0, prefixBytes - 1) : Promise.resolve("");
 		const tail = suffixBytes > 0 ? this.#client.getrange(key, -suffixBytes, -1) : Promise.resolve("");
 		return Promise.all([head, tail]);
+	}
+
+	async readTail(path: string, suffixBytes: number): Promise<{ tail: string; size: number }> {
+		const result = await this.#client.send("EVAL", [READ_TAIL_SCRIPT, "1", this.#fileKey(path), String(suffixBytes)]);
+		if (!Array.isArray(result) || Number(result[0]) < 0) {
+			throw Object.assign(new Error(`Session not found: ${path}`), { code: "ENOENT" });
+		}
+		return { size: Number(result[0]), tail: String(result[1]) };
 	}
 
 	async writeFull(

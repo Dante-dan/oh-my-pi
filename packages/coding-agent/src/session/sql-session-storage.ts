@@ -101,6 +101,7 @@ interface ContentRow {
 }
 
 interface SliceRow {
+	byte_len: number | bigint | string;
 	head: unknown;
 	tail: unknown;
 }
@@ -167,7 +168,7 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 			readSlices:
 				`SELECT substring(cast(content AS binary), 1, ?) AS head, ` +
 				`CASE WHEN ? <= 0 THEN cast('' AS binary) ` +
-				`ELSE substring(cast(content AS binary), greatest(1, length(content) - ? + 1)) END AS tail ` +
+				`ELSE substring(cast(content AS binary), greatest(1, length(content) - ? + 1)) END AS tail, length(content) AS byte_len ` +
 				`FROM ${table} WHERE path = ?`,
 		};
 	}
@@ -179,10 +180,10 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 		adapter === "postgres"
 			? `SELECT substring(convert_to(content, 'UTF8') from 1 for ${placeholder(1)}) AS head, ` +
 				`CASE WHEN ${placeholder(2)} <= 0 THEN ''::bytea ` +
-				`ELSE substring(convert_to(content, 'UTF8') from greatest(1, octet_length(content) - ${placeholder(2)} + 1)) END AS tail ` +
+				`ELSE substring(convert_to(content, 'UTF8') from greatest(1, octet_length(content) - ${placeholder(2)} + 1)) END AS tail, octet_length(content) AS byte_len ` +
 				`FROM ${table} WHERE path = ${placeholder(3)}`
 			: `SELECT substr(cast(content AS blob), 1, ?) AS head, ` +
-				`CASE WHEN ? <= 0 THEN x'' ELSE substr(cast(content AS blob), -?) END AS tail ` +
+				`CASE WHEN ? <= 0 THEN x'' ELSE substr(cast(content AS blob), -?) END AS tail, length(cast(content AS blob)) AS byte_len ` +
 				`FROM ${table} WHERE path = ?`;
 
 	return {
@@ -355,6 +356,14 @@ class SqlSessionStorageBackend implements SessionStorageBackend {
 		const row = rows[0];
 		if (!row) throw enoent(path);
 		return [decodeSqlBytes(row.head), decodeSqlBytes(row.tail)];
+	}
+
+	async readTail(path: string, suffixBytes: number): Promise<{ tail: string; size: number }> {
+		const values = this.#adapter === "postgres" ? [0, suffixBytes, path] : [0, suffixBytes, suffixBytes, path];
+		const rows = (await this.#client.unsafe(this.#q.readSlices, values)) as SliceRow[];
+		const row = rows[0];
+		if (!row) throw enoent(path);
+		return { tail: decodeSqlBytes(row.tail), size: rowNumber(row.byte_len) };
 	}
 
 	async writeFull(

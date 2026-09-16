@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -187,6 +187,42 @@ describe("session exit diagnostics", () => {
 		).toBe(true);
 		await reopened.close();
 		await first.close();
+	});
+
+	it("does not let draining maintenance rewrite erase a peer before the final exit", async () => {
+		tempDir = TempDir.createSync("@pi-exit-maintenance-");
+		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		const first = SessionManager.create(tempDir.path(), tempDir.path());
+		first.appendMessage({ ...pendingAssistant, content: [{ type: "text", text: "shared" }], stopReason: "stop" });
+		await first.flush();
+		const file = first.getSessionFile();
+		if (!file) throw new Error("Expected session file");
+		const second = await SessionManager.open(file, tempDir.path(), undefined, { suppressBreadcrumb: true });
+		const peerId = second.appendMessage({ role: "user", content: "peer", timestamp: Date.now() });
+		await second.close();
+		const agent = new Agent({ convertToLlm });
+		session = new AgentSession({
+			agent,
+			sessionManager: first,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		const maintenance = spyOn(agent, "waitForIdle").mockImplementation(async () => {
+			// A maintenance handler still draining during dispose must retain its
+			// original CAS token, not the exit append's refreshed shared size.
+			await first.rewriteEntries().catch(() => undefined);
+		});
+		await session.dispose().catch(() => undefined);
+		maintenance.mockRestore();
+		session = undefined;
+		const reopened = await SessionManager.open(file, tempDir.path(), undefined, { suppressBreadcrumb: true });
+		expect(reopened.getEntries().some(entry => entry.id === peerId)).toBe(true);
+		expect(reopened.getLeafEntry()).toMatchObject({
+			type: "custom",
+			customType: SESSION_EXIT_CUSTOM_TYPE,
+			parentId: peerId,
+		});
+		await reopened.close();
 	});
 
 	it("signal teardown persists the postmortem reason, not the generic dispose", async () => {

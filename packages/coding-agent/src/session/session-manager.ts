@@ -2894,7 +2894,10 @@ export class SessionManager {
 		const id = generateId(this.#index);
 		const build = (lastLine: string): { content: string; value: CustomEntry } => {
 			const tail = JSON.parse(lastLine) as { type?: string; id?: unknown };
-			const parentId = tail.type === "session" ? null : tail.id;
+			const tailId = tail.type === "session" ? null : tail.id;
+			// Known records may have been appended to a background branch without
+			// moving our active leaf. Only an unknown tail proves a peer advanced it.
+			const parentId = typeof tailId === "string" && this.#index.has(tailId) ? this.#index.leafId() : tailId;
 			if (parentId !== null && typeof parentId !== "string") {
 				throw new Error("Cannot append to a session journal without a valid tail entry.");
 			}

@@ -139,6 +139,33 @@ describe("session exit diagnostics", () => {
 		});
 	});
 
+	it("preserves the active branch when a background result is the physical tail", async () => {
+		tempDir = TempDir.createSync("@pi-session-exit-branch-");
+		const manager = SessionManager.create(tempDir.path(), tempDir.path());
+		const oldBranch = manager.appendMessage({ role: "user", content: "old turn", timestamp: Date.now() });
+		manager.appendMessage({
+			...pendingAssistant,
+			content: [{ type: "text", text: "old answer" }],
+			stopReason: "stop",
+		});
+		manager.branch(oldBranch);
+		const activeLeaf = manager.appendMessage({ role: "user", content: "current turn", timestamp: Date.now() });
+		const backgroundId = manager.appendMessageToBranch(
+			{ ...pendingAssistant, content: [{ type: "text", text: "background answer" }], stopReason: "stop" },
+			oldBranch,
+		);
+		await manager.flush();
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected session file");
+		const exitId = manager.appendCustomEntryAtPersistedTail(SESSION_EXIT_CUSTOM_TYPE, { reason: "dispose" });
+		await manager.close();
+		const reopened = await SessionManager.open(sessionFile, tempDir.path(), undefined, { suppressBreadcrumb: true });
+		const branch = reopened.getBranch();
+		expect(branch.at(-1)).toMatchObject({ id: exitId, parentId: activeLeaf });
+		expect(branch.map(entry => entry.id)).not.toContain(backgroundId);
+		await reopened.close();
+	});
+
 	it("anchors a session exit to the journal tail advanced by another process", async () => {
 		tempDir = TempDir.createSync("@pi-session-exit-tail-");
 		const first = SessionManager.create(tempDir.path(), tempDir.path());

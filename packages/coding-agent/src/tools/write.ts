@@ -636,9 +636,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				// policyKey makes the outer gate consult `tools.approval.<device>` for
 				// this dispatch before falling back to `tools.approval.write`, so users
 				// can scope allow/deny/prompt to a single device (issue #7923).
+				const policyKey = resolveToolPolicyKey(inst, parsed) ?? xdevTarget.name!;
 				return {
 					tier: resolveToolTier(inst, parsed),
-					policyKey: resolveToolPolicyKey(inst, parsed) ?? xdevTarget.name!,
+					policyKey,
+					...(policyKey !== xdevTarget.name ? { policyFallbackKey: xdevTarget.name! } : {}),
 				};
 			} catch {
 				return "exec";

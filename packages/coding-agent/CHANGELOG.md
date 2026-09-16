@@ -5,6 +5,7 @@
 ### Added
 
 - Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
+- GitHub tool approval policies can now target individual operations such as `github.pr_checkout`, while retaining the tool-wide `github` fallback ([#12066](https://github.com/can1357/oh-my-pi/issues/12066)).
 
 ## [18.2.1] - 2026-09-15
 
@@ -424,8 +425,6 @@
 
 ### Added
 
-- GitHub tool approval policies can now target individual operations such as `github.pr_checkout`, while retaining the tool-wide `github` fallback ([#12066](https://github.com/can1357/oh-my-pi/issues/12066)).
-- GitHub tool approval policies can now target individual operations such as `github.pr_checkout`, while retaining the tool-wide `github` fallback ([#12081](https://github.com/can1357/oh-my-pi/pull/12081) by [@Dante-dan](https://github.com/Dante-dan)).
 - Added a privacy warning to memory reports reminding users to review data for secrets before sharing
 - `omp git` / `/git`: `delete` discards the selected file's changes (press twice to confirm) — in the sidebar on a file or whole directory, in the diff pane on the shown file; untracked files are removed, staged files reset to HEAD
 

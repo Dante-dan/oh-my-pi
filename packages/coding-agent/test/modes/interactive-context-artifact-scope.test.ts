@@ -21,7 +21,9 @@ describe("interactive artifact link targets", () => {
 		const childId = await manager.save("child", "read", "controller-child");
 		const localProtocolOptions = {
 			getArtifactsDir: () => root,
-			getSessionId: () => "controller-child",
+			// Structured children inherit the parent's options object; the active
+			// view session ID must override this callback during link resolution.
+			getSessionId: () => "controller-main",
 			artifactResolutionScope: "producer" as const,
 		};
 		const session = {

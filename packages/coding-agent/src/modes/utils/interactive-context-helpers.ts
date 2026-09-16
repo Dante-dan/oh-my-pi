@@ -46,6 +46,7 @@ export async function refreshAssistantMessageLinkTargets(
 	if (hrefs.size === 0) return previous;
 	const resolved = await resolveMarkdownLinkTargets(texts, {
 		cwd: session.sessionManager.getCwd(),
+		sessionId: session.sessionManager.getSessionId(),
 		sessionFile: session.sessionFile,
 		settings: session.settings,
 		localProtocolOptions: session.localProtocolOptions,

@@ -132,6 +132,8 @@ export interface SessionStorage {
 	 * and write.
 	 */
 	appendFromTailSync?<T>(path: string, build: (lastLine: string) => { content: string; value: T }): T;
+	/** Deferred equivalent for network-backed stores; callers must await publication. */
+	appendFromTail?<T>(path: string, build: (lastLine: string) => { content: string; value: T }): Promise<T>;
 	/**
 	 * Update the current session title through the storage backend.
 	 *

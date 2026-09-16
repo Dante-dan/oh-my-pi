@@ -72,6 +72,7 @@ interface DialectQueries {
 	replaceIfSize: string;
 	/** Insert if missing; otherwise append the new chunk to existing content. Used for `writeLine`. */
 	upsertAppend: string;
+	appendIfSize: string;
 	/** Update indexed title metadata without rewriting the JSONL body. */
 	updateTitle: string;
 	/** Delete a single row by path. */
@@ -154,6 +155,7 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 			replaceIfSize:
 				`UPDATE ${table} SET content = ?, mtime_ms = ?, title = ?, title_source = ?, title_updated_at = ? ` +
 				`WHERE path = ? AND length(content) = ?`,
+			appendIfSize: `UPDATE ${table} SET content = CONCAT(content, ?), mtime_ms = ? WHERE path = ? AND length(content) = ?`,
 			upsertAppend:
 				`INSERT INTO ${table} (path, content, mtime_ms) VALUES (?, ?, ?) ` +
 				`ON DUPLICATE KEY UPDATE content = CONCAT(content, VALUES(content)), mtime_ms = VALUES(mtime_ms)`,
@@ -210,6 +212,7 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 			`UPDATE ${table} SET content = ${placeholder(1)}, mtime_ms = ${placeholder(2)}, title = ${placeholder(3)}, ` +
 			`title_source = ${placeholder(4)}, title_updated_at = ${placeholder(5)} ` +
 			`WHERE path = ${placeholder(6)} AND ${byteLengthExpr} = ${placeholder(7)} RETURNING path`,
+		appendIfSize: `UPDATE ${table} SET content = content || ${placeholder(1)}, mtime_ms = ${placeholder(2)} WHERE path = ${placeholder(3)} AND ${byteLengthExpr} = ${placeholder(4)} RETURNING path`,
 		upsertAppend:
 			`INSERT INTO ${table} (path, content, mtime_ms) ` +
 			`VALUES (${placeholder(1)}, ${placeholder(2)}, ${placeholder(3)}) ` +
@@ -397,7 +400,17 @@ class SqlSessionStorageBackend implements SessionStorageBackend {
 		]);
 	}
 
-	async append(path: string, line: string, mtimeMs: number): Promise<void> {
+	async append(path: string, line: string, mtimeMs: number, expectedSize?: number): Promise<void> {
+		if (expectedSize !== undefined) {
+			const result = await this.#client.unsafe(this.#q.appendIfSize, [line, mtimeMs, path, expectedSize]);
+			if (this.#adapter === "mysql" ? result.affectedRows === 1 : result.length === 1) return;
+			const current = await this.readFull(path);
+			throw new SessionWriteConflictError(
+				path,
+				expectedSize,
+				current === null ? null : Buffer.byteLength(current, "utf8"),
+			);
+		}
 		await this.#client.unsafe(this.#q.upsertAppend, [path, line, mtimeMs]);
 	}
 

@@ -2883,7 +2883,7 @@ export class SessionManager {
 		if (
 			!this.#persist ||
 			!sessionFile ||
-			!this.#storage.appendFromTailSync ||
+			(!this.#storage.appendFromTailSync && !this.#storage.appendFromTail) ||
 			!this.#storage.existsSync(sessionFile)
 		) {
 			return this.appendCustomEntry(customType, data);
@@ -2891,7 +2891,8 @@ export class SessionManager {
 		if (this.#atomicEntryBatch)
 			throw new Error("Cannot append a persisted-tail entry during an atomic session batch.");
 
-		const entry = this.#storage.appendFromTailSync(sessionFile, lastLine => {
+		const id = generateId(this.#index);
+		const build = (lastLine: string): { content: string; value: CustomEntry } => {
 			const tail = JSON.parse(lastLine) as { type?: string; id?: unknown };
 			const parentId = tail.type === "session" ? null : tail.id;
 			if (parentId !== null && typeof parentId !== "string") {
@@ -2901,24 +2902,40 @@ export class SessionManager {
 				type: "custom",
 				customType,
 				data,
-				id: generateId(this.#index),
+				id,
 				parentId,
 				timestamp: nowIso(),
 			};
 			return { content: this.#lineFor(entry), value: entry };
-		});
+		};
 
-		this.#entries.push(entry);
-		this.#index.insert(entry);
-		// Supersede any queued rewrite built before this cross-process snapshot;
-		// publishing it afterward would replace the newly observed external tail.
-		this.#diskEpoch++;
-		this.#diskTail = Promise.resolve();
-		this.#expectedDiskSize = this.#storage.statSync(sessionFile).size;
-		this.#fileIsCurrent = true;
-		this.#rewriteRequired = false;
-		this.#notifyEntryAppended(entry);
-		return entry.id;
+		const record = (entry: CustomEntry): void => {
+			this.#entries.push(entry);
+			this.#index.insert(entry);
+			this.#expectedDiskSize = this.#storage.statSync(sessionFile).size;
+			this.#notifyEntryAppended(entry);
+		};
+		// Supersede queued snapshots before a deferred tail append. The terminal
+		// append itself must survive seal() and be awaited by close().
+		const supersedeSnapshot = (): void => {
+			this.#diskEpoch++;
+			this.#fileIsCurrent = true;
+			this.#rewriteRequired = false;
+		};
+		if (this.#storage.appendFromTailSync) {
+			const entry = this.#storage.appendFromTailSync(sessionFile, build);
+			supersedeSnapshot();
+			record(entry);
+		} else {
+			supersedeSnapshot();
+			void this.#scheduleDiskWork(
+				async () => {
+					record(await this.#storage.appendFromTail!(sessionFile, build));
+				},
+				{ ignoreEpoch: true },
+			).catch(() => undefined);
+		}
+		return id;
 	}
 
 	/**

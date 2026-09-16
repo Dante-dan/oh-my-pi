@@ -40,7 +40,8 @@ export interface SessionStorageBackend {
 		title?: SessionTitleUpdate,
 		expectedSize?: number | null,
 	): Promise<void>;
-	append(path: string, line: string, mtimeMs: number): Promise<void>;
+	/** Append atomically only if the current byte size matches, when supplied. */
+	append(path: string, line: string, mtimeMs: number, expectedSize?: number): Promise<void>;
 	updateSessionTitle(path: string, title: SessionTitleUpdate, mtimeMs: number): Promise<void>;
 	truncate(path: string, mtimeMs: number): Promise<void>;
 	remove(paths: string[]): Promise<void>;
@@ -212,6 +213,36 @@ export class IndexedSessionStorage implements SessionStorage {
 			{ trackDrain: true },
 		);
 		this.#trackFrame(path, mtimeMs, write);
+	}
+
+	async appendFromTail<T>(path: string, build: (lastLine: string) => { content: string; value: T }): Promise<T> {
+		let value!: T;
+		await this.#enqueuePath(
+			path,
+			async () => {
+				// The backend CAS closes the gap between reading another client's tail
+				// and publishing. Retry only contention, never ambiguous I/O failures.
+				for (let attempt = 0; ; attempt++) {
+					const content = await this.#backend.readFull(path);
+					if (content === null) throw enoent(path);
+					const trimmed = content.trimEnd();
+					const built = build(trimmed.slice(trimmed.lastIndexOf("\n") + 1));
+					const next = content + (content.endsWith("\n") ? "" : "\n") + built.content;
+					const mtimeMs = this.#allocMtimeMs();
+					try {
+						await this.#backend.append(path, next.slice(content.length), mtimeMs, byteLength(content));
+					} catch (error) {
+						if (error instanceof SessionWriteConflictError && attempt < 7) continue;
+						throw error;
+					}
+					this.#setIndex(path, byteLength(next), mtimeMs);
+					value = built.value;
+					return;
+				}
+			},
+			{ trackDrain: true, abortOnPredecessorFailure: true },
+		);
+		return value;
 	}
 
 	async updateSessionTitle(path: string, title: SessionTitleUpdate): Promise<void> {

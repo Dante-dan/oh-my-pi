@@ -25,6 +25,29 @@ function fakeUsage(input: number, output: number): Usage {
 }
 
 describe("SessionManager + SqlSessionStorage (SQLite)", () => {
+	it("keeps a peer's complete branch when a stale client exits and seals", async () => {
+		const client = new SQL("sqlite::memory:");
+		const firstStorage = await SqlSessionStorage.create({ client });
+		const first = SessionManager.create("/cwd", "/sessions/exit", firstStorage);
+		await first.ensureOnDisk();
+		const file = first.getSessionFile();
+		if (!file) throw new Error("Expected session file");
+		const secondStorage = await SqlSessionStorage.create({ client });
+		const second = await SessionManager.open(file, "/sessions/exit", secondStorage);
+		const peerId = second.appendMessage({ role: "user", content: "peer's newer turn", timestamp: Date.now() });
+		await second.close();
+		const exitId = first.appendCustomEntryAtPersistedTail("session_exit", { reason: "dispose" });
+		first.flushSync();
+		first.seal();
+		await first.close();
+		const freshStorage = await SqlSessionStorage.create({ client });
+		const reopened = await SessionManager.open(file, "/sessions/exit", freshStorage);
+		expect(reopened.getLeafEntry()).toMatchObject({ id: exitId, parentId: peerId });
+		expect(reopened.getBranch().some(entry => entry.id === peerId)).toBe(true);
+		await reopened.close();
+		await client.end();
+	});
+
 	it("persists appended assistant messages into SQL and reloads via open()", async () => {
 		const client = new SQL("sqlite::memory:");
 		const storage = await SqlSessionStorage.create({ client });

@@ -88,7 +88,10 @@ export function extractInternalUrlContext(textBeforeCursor: string): InternalUrl
 }
 
 /** Caller binding shared by tool execution and prompt completion. */
-export type InternalUrlCallerContext = Pick<ResolveContext, "cwd" | "sessionFile" | "sessionId" | "agentRegistry">;
+export type InternalUrlCallerContext = Pick<
+	ResolveContext,
+	"cwd" | "sessionFile" | "sessionId" | "agentRegistry" | "localProtocolOptions"
+>;
 
 /**
  * Suggestions for the internal-url token ending at the cursor, or `null` when

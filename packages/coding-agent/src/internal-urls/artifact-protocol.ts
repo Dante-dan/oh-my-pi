@@ -17,6 +17,15 @@ import { artifactsDirsFromRegistry } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
 const MAX_INLINE_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const ARTIFACT_FILENAME_RE = /^(\d+)\.[A-Za-z0-9_-]+\.log$/;
+
+function artifactIdFromFilename(filename: string): string | undefined {
+	return ARTIFACT_FILENAME_RE.exec(filename)?.[1];
+}
+
+function isArtifactFilenameForId(filename: string, id: string): boolean {
+	return artifactIdFromFilename(filename) === id;
+}
 
 /** Filesystem location for a session artifact, resolved without materializing its content. */
 export interface ResolvedArtifactFile {
@@ -78,7 +87,7 @@ export async function resolveArtifactFile(url: InternalUrl, context?: ResolveCon
 			if (isEnoent(err)) continue;
 			throw err;
 		}
-		const match = files.find(f => f.startsWith(`${id}.`));
+		const match = files.find(f => isArtifactFilenameForId(f, id));
 		if (match) {
 			const provenance = await readArtifactProvenance(dir, id);
 			if (!producerScoped || provenance?.producerSessionId === callerSessionId) {
@@ -89,8 +98,8 @@ export async function resolveArtifactFile(url: InternalUrl, context?: ResolveCon
 		}
 		if (!producerScoped) {
 			for (const f of files) {
-				const m = f.match(/^(\d+)\./);
-				if (m) availableIds.add(m[1]);
+				const artifactId = artifactIdFromFilename(f);
+				if (artifactId) availableIds.add(artifactId);
 			}
 		}
 	}
@@ -167,10 +176,13 @@ export class ArtifactProtocolHandler implements ProtocolHandler {
 				throw err;
 			}
 			for (const f of files) {
-				const m = f.match(/^(\d+)\./);
-				if (!m) continue;
-				if (!producerScoped || (await readArtifactProvenance(dir, m[1]!))?.producerSessionId === callerSessionId) {
-					ids.add(m[1]!);
+				const artifactId = artifactIdFromFilename(f);
+				if (!artifactId) continue;
+				if (
+					!producerScoped ||
+					(await readArtifactProvenance(dir, artifactId))?.producerSessionId === callerSessionId
+				) {
+					ids.add(artifactId);
 				}
 			}
 		}

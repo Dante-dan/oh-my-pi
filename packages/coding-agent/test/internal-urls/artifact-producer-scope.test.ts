@@ -25,6 +25,8 @@ describe("artifact:// producer scope", () => {
 		const manager = new ArtifactManager(dir);
 		const parentId = await manager.save("parent secret", "read", "parent-session");
 		const childId = await manager.save("child output", "bash", "child-session");
+		await Bun.write(path.join(dir, `${childId}.md`), "numeric-named child transcript");
+		await Bun.write(path.join(dir, "99.jsonl"), "numeric-named unrelated transcript");
 		registerArtifactsDir(dir);
 
 		expect(await readArtifactProvenance(dir, parentId)).toEqual({
@@ -49,6 +51,20 @@ describe("artifact:// producer scope", () => {
 		await expect(crossRead).rejects.not.toThrow("Available:");
 		await expect(handler.resolve(parseInternalUrl("artifact://999"), context)).rejects.not.toThrow("Available:");
 		expect(await handler.complete("", context)).toEqual([{ value: childId }]);
+	});
+
+	it("does not resolve or enumerate numeric-named non-artifact files in shared scope", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "artifact-shared-filename-"));
+		roots.push(root);
+		await Bun.write(path.join(root, "0.md"), "subagent output");
+		await Bun.write(path.join(root, "1.jsonl"), "subagent transcript");
+		registerArtifactsDir(root);
+
+		const handler = new ArtifactProtocolHandler();
+		await expect(handler.resolve(parseInternalUrl("artifact://0"))).rejects.toThrow(
+			"Artifact 0 not found. Available: none",
+		);
+		expect(await handler.complete()).toEqual([]);
 	});
 
 	it("fails closed for legacy artifacts without producer metadata", async () => {

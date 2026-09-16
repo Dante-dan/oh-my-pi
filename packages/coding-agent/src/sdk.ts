@@ -3787,6 +3787,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
+			localProtocolOptions,
 			settings,
 			additionalExtensionPaths: options.additionalExtensionPaths,
 			extensionRoots: buildSessionExtensionRoots,

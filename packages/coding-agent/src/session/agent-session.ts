@@ -1250,6 +1250,10 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		this.localProtocolOptions = config.localProtocolOptions ?? {
+			getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+			getSessionId: () => this.sessionManager.getSessionId(),
+		};
 		this.settings = config.settings;
 		this.#modelRegistry = config.modelRegistry;
 		this.#extensionRoots =
@@ -4077,11 +4081,10 @@ export class AgentSession {
 		return undefined;
 	}
 
+	readonly localProtocolOptions: LocalProtocolOptions;
+
 	#localProtocolOptions(): LocalProtocolOptions {
-		return {
-			getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
-			getSessionId: () => this.sessionManager.getSessionId(),
-		};
+		return this.localProtocolOptions;
 	}
 
 	#resetSessionStopContinuationState(): void {

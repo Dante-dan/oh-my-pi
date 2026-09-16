@@ -48,10 +48,7 @@ export async function refreshAssistantMessageLinkTargets(
 		cwd: session.sessionManager.getCwd(),
 		sessionFile: session.sessionFile,
 		settings: session.settings,
-		localProtocolOptions: {
-			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
-			getSessionId: () => session.sessionManager.getSessionId(),
-		},
+		localProtocolOptions: session.localProtocolOptions,
 		skills: session.skills,
 		rules: session.ttsrManager?.getRules(),
 	});

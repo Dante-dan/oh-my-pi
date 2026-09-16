@@ -40,6 +40,19 @@ export async function readArtifactProvenance(dir: string, id: string): Promise<A
 	}
 }
 
+/** Reassign valid artifact sidecars copied into a fork to the forked session. */
+export async function rebindArtifactProvenance(dir: string, producerSessionId: string): Promise<void> {
+	for (const file of await fs.readdir(dir)) {
+		const match = /^\.artifact-(\d+)\.json$/.exec(file);
+		if (!match || !(await readArtifactProvenance(dir, match[1]!))) continue;
+		const provenance: ArtifactProvenance = {
+			version: ARTIFACT_PROVENANCE_VERSION,
+			producerSessionId,
+		};
+		await writeArtifact(provenancePath(dir, match[1]!), `${JSON.stringify(provenance)}\n`);
+	}
+}
+
 /**
  * Sanitize a tool name for safe use as the middle segment of the artifact
  * filename (`${id}.${toolType}.log`). Built-in tool names are fixed, but MCP,

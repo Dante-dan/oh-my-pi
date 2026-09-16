@@ -139,6 +139,56 @@ describe("session exit diagnostics", () => {
 		});
 	});
 
+	it("anchors a session exit to the journal tail advanced by another process", async () => {
+		tempDir = TempDir.createSync("@pi-session-exit-tail-");
+		const first = SessionManager.create(tempDir.path(), tempDir.path());
+		first.appendMessage({ role: "user", content: "shared turn", timestamp: Date.now() });
+		first.appendMessage({
+			...pendingAssistant,
+			content: [{ type: "text", text: "shared answer" }],
+			stopReason: "stop",
+		});
+		await first.flush();
+		const sessionFile = first.getSessionFile();
+		if (!sessionFile) throw new Error("Expected session file");
+
+		const second = await SessionManager.open(sessionFile, tempDir.path(), undefined, { suppressBreadcrumb: true });
+		second.appendMessage({ role: "user", content: "newer turn", timestamp: Date.now() });
+		const newerAnswer = `newer answer ${"x".repeat(70 * 1024)}`;
+		const newerAssistantId = second.appendMessage({
+			...pendingAssistant,
+			content: [{ type: "text", text: newerAnswer }],
+			stopReason: "stop",
+		});
+		await second.close();
+
+		const exitId = first.appendCustomEntryAtPersistedTail(SESSION_EXIT_CUSTOM_TYPE, {
+			reason: "dispose",
+			kind: "normal",
+			recordedAt: "2026-09-16T11:30:00.000Z",
+		});
+		first.flushSync();
+
+		const reopened = await SessionManager.open(sessionFile, tempDir.path(), undefined, {
+			suppressBreadcrumb: true,
+		});
+		const branch = reopened.getBranch();
+		expect(branch.map(entry => entry.id)).toContain(newerAssistantId);
+		expect(branch.at(-1)).toMatchObject({ id: exitId, parentId: newerAssistantId });
+		expect(
+			reopened
+				.buildSessionContext({ transcript: true })
+				.messages.some(
+					message =>
+						message.role === "assistant" &&
+						message.content[0]?.type === "text" &&
+						message.content[0].text === newerAnswer,
+				),
+		).toBe(true);
+		await reopened.close();
+		await first.close();
+	});
+
 	it("signal teardown persists the postmortem reason, not the generic dispose", async () => {
 		tempDir = TempDir.createSync("@pi-session-exit-signal-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));

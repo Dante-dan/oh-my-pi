@@ -6,6 +6,10 @@
 
 - Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
 
+### Fixed
+
+- Session teardown now anchors its exit marker to the journal's current persisted tail, so killing a stale process cannot make `--resume` select its dead-end branch over turns written by another client ([#12242](https://github.com/can1357/oh-my-pi/issues/12242)).
+
 ## [18.2.1] - 2026-09-15
 
 ### Breaking Changes

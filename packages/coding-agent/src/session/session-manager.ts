@@ -2869,6 +2869,59 @@ export class SessionManager {
 	}
 
 	/**
+	 * Append a teardown marker against the journal's current persisted tail.
+	 *
+	 * A second process may have advanced the same session after this manager's
+	 * in-memory leaf stopped moving. The storage callback holds the same publish
+	 * lock as ordinary appends while it reads and extends the file, so the marker
+	 * cannot fork from a stale leaf. This is a terminal operation: persistence
+	 * remains append-only afterward so close cannot rewrite away entries held
+	 * only by the other process.
+	 */
+	appendCustomEntryAtPersistedTail(customType: string, data?: unknown): string {
+		const sessionFile = this.#sessionFile;
+		if (
+			!this.#persist ||
+			!sessionFile ||
+			!this.#storage.appendFromTailSync ||
+			!this.#storage.existsSync(sessionFile)
+		) {
+			return this.appendCustomEntry(customType, data);
+		}
+		if (this.#atomicEntryBatch)
+			throw new Error("Cannot append a persisted-tail entry during an atomic session batch.");
+
+		const entry = this.#storage.appendFromTailSync(sessionFile, lastLine => {
+			const tail = JSON.parse(lastLine) as { type?: string; id?: unknown };
+			const parentId = tail.type === "session" ? null : tail.id;
+			if (parentId !== null && typeof parentId !== "string") {
+				throw new Error("Cannot append to a session journal without a valid tail entry.");
+			}
+			const entry: CustomEntry = {
+				type: "custom",
+				customType,
+				data,
+				id: generateId(this.#index),
+				parentId,
+				timestamp: nowIso(),
+			};
+			return { content: this.#lineFor(entry), value: entry };
+		});
+
+		this.#entries.push(entry);
+		this.#index.insert(entry);
+		// Supersede any queued rewrite built before this cross-process snapshot;
+		// publishing it afterward would replace the newly observed external tail.
+		this.#diskEpoch++;
+		this.#diskTail = Promise.resolve();
+		this.#expectedDiskSize = this.#storage.statSync(sessionFile).size;
+		this.#fileIsCurrent = true;
+		this.#rewriteRequired = false;
+		this.#notifyEntryAppended(entry);
+		return entry.id;
+	}
+
+	/**
 	 * Rewrite the session file after in-place entry updates (e.g. pruning old tool
 	 * outputs). Use sparingly.
 	 */

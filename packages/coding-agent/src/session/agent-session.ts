@@ -2524,7 +2524,7 @@ export class AgentSession {
 		};
 		if (pendingToolCalls.length > 0) data.pendingToolCalls = pendingToolCalls;
 		try {
-			this.sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, data);
+			this.sessionManager.appendCustomEntryAtPersistedTail(SESSION_EXIT_CUSTOM_TYPE, data);
 			this.sessionManager.flushSync();
 			// Only pending tool calls or an abnormal teardown are noteworthy; a
 			// clean dispose logs at debug so routine exits don't read as problems.

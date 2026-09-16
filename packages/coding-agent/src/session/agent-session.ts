@@ -1806,6 +1806,9 @@ export class AgentSession {
 			},
 		});
 		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
+			// Signal teardown marks disposal before awaiting the draft. Let its
+			// final drain record the exit, rather than racing maintenance writes.
+			if (this.#isDisposed) return;
 			this.#recordSessionExit(reason);
 		});
 		this.#cancelFatalRecoveryHint = postmortem.registerFatalRecoveryHint(() => {

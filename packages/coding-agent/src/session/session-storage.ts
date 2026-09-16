@@ -389,10 +389,12 @@ function isPidAlive(pid: number): boolean {
 }
 
 export class FileSessionStorage implements SessionStorage {
-	#readLastNonEmptyLineSync(fpath: string): string {
+	#readLastNonEmptyLineSync(fpath: string): { line: string; needsSeparator: boolean } {
 		const fd = fs.openSync(fpath, "r");
 		try {
-			let cursor = fs.fstatSync(fd).size;
+			const size = fs.fstatSync(fd).size;
+			let cursor = size;
+			let needsSeparator = false;
 			const chunks: Buffer[] = [];
 			let trimEnd = true;
 			while (cursor > 0) {
@@ -400,6 +402,7 @@ export class FileSessionStorage implements SessionStorage {
 				const start = cursor - length;
 				const chunk = Buffer.allocUnsafe(length);
 				fs.readSync(fd, chunk, 0, length, start);
+				if (cursor === size) needsSeparator = chunk[length - 1] !== 0x0a;
 				let end = length;
 				if (trimEnd) {
 					while (end > 0 && (chunk[end - 1] === 0x0a || chunk[end - 1] === 0x0d)) end--;
@@ -417,7 +420,7 @@ export class FileSessionStorage implements SessionStorage {
 				chunks.unshift(chunk.subarray(0, end));
 				cursor = start;
 			}
-			return Buffer.concat(chunks).toString("utf8");
+			return { line: Buffer.concat(chunks).toString("utf8"), needsSeparator };
 		} finally {
 			fs.closeSync(fd);
 		}
@@ -665,8 +668,9 @@ export class FileSessionStorage implements SessionStorage {
 
 	appendFromTailSync<T>(fpath: string, build: (lastLine: string) => { content: string; value: T }): T {
 		return this.#withPublishLock(fpath, () => {
-			const append = build(this.#readLastNonEmptyLineSync(fpath));
-			fs.appendFileSync(fpath, append.content);
+			const tail = this.#readLastNonEmptyLineSync(fpath);
+			const append = build(tail.line);
+			fs.appendFileSync(fpath, (tail.needsSeparator ? "\n" : "") + append.content);
 			return append.value;
 		});
 	}
@@ -1163,10 +1167,11 @@ export class MemorySessionStorage implements SessionStorage {
 
 	appendFromTailSync<T>(path: string, build: (lastLine: string) => { content: string; value: T }): T {
 		const entry = this.#requireEntry(path);
-		const lastLine = materializeMemoryEntry(entry).trimEnd().split("\n").at(-1);
+		const content = materializeMemoryEntry(entry);
+		const lastLine = content.trimEnd().split("\n").at(-1);
 		if (!lastLine) throw new Error(`Session file is empty: ${path}`);
 		const append = build(lastLine);
-		appendMemoryChunk(entry, append.content);
+		appendMemoryChunk(entry, (content.endsWith("\n") ? "" : "\n") + append.content);
 		entry.mtimeMs = Date.now();
 		return append.value;
 	}

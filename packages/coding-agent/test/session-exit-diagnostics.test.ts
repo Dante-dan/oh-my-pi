@@ -19,6 +19,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { FileSessionStorage, MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 const pendingAssistant: AssistantMessage = {
@@ -216,7 +217,7 @@ describe("session exit diagnostics", () => {
 		await first.close();
 	});
 
-	it("does not let draining maintenance rewrite erase a peer before the final exit", async () => {
+	it("preserves the peer tail when the signal recorder runs while teardown saves the draft", async () => {
 		tempDir = TempDir.createSync("@pi-exit-maintenance-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		const first = SessionManager.create(tempDir.path(), tempDir.path());
@@ -228,19 +229,45 @@ describe("session exit diagnostics", () => {
 		const peerId = second.appendMessage({ role: "user", content: "peer", timestamp: Date.now() });
 		await second.close();
 		const agent = new Agent({ convertToLlm });
-		session = new AgentSession({
-			agent,
-			sessionManager: first,
-			settings: Settings.isolated(),
-			modelRegistry: new ModelRegistry(authStorage),
+		const register = postmortem.register;
+		let recorder: ((reason: postmortem.Reason) => void | Promise<void>) | undefined;
+		const registration = spyOn(postmortem, "register").mockImplementation((id, callback, options) => {
+			if (id.startsWith("agent-session:")) recorder = callback;
+			return register(id, callback, options);
 		});
+		try {
+			session = new AgentSession({
+				agent,
+				sessionManager: first,
+				settings: Settings.isolated(),
+				modelRegistry: new ModelRegistry(authStorage),
+			});
+		} finally {
+			registration.mockRestore();
+		}
+		const activeSession = session;
 		const maintenance = spyOn(agent, "waitForIdle").mockImplementation(async () => {
 			// A maintenance handler still draining during dispose must retain its
 			// original CAS token, not the exit append's refreshed shared size.
 			await first.rewriteEntries().catch(() => undefined);
 		});
-		await session.dispose().catch(() => undefined);
-		maintenance.mockRestore();
+		const draft = Promise.withResolvers<void>();
+		const teardown = createSessionTeardown({
+			getDraftText: () => "pending draft",
+			beginDispose: () => activeSession.beginDispose(),
+			saveDraft: () => draft.promise,
+			disposeSession: reason => activeSession.dispose({ reason }),
+		});
+		const disposing = teardown(postmortem.Reason.SIGTERM);
+		try {
+			if (!recorder) throw new Error("Expected agent-session exit recorder");
+			// postmortem invokes the earlier recorder before the draft await settles.
+			await recorder(postmortem.Reason.SIGTERM);
+		} finally {
+			draft.resolve();
+			await disposing.catch(() => undefined);
+			maintenance.mockRestore();
+		}
 		session = undefined;
 		const reopened = await SessionManager.open(file, tempDir.path(), undefined, { suppressBreadcrumb: true });
 		expect(reopened.getEntries().some(entry => entry.id === peerId)).toBe(true);
@@ -248,9 +275,27 @@ describe("session exit diagnostics", () => {
 			type: "custom",
 			customType: SESSION_EXIT_CUSTOM_TYPE,
 			parentId: peerId,
+			data: expect.objectContaining({ reason: "sigterm", kind: "signal" }),
 		});
 		await reopened.close();
 	});
+
+	for (const backend of ["file", "memory"] as const) {
+		it(`keeps an unterminated ${backend} journal tail parseable when appending an exit`, async () => {
+			tempDir = TempDir.createSync("@pi-exit-separator-");
+			const storage = backend === "file" ? new FileSessionStorage() : new MemorySessionStorage();
+			const file = path.join(tempDir.path(), "session.jsonl");
+			storage.writeTextSync(file, '{"type":"custom","id":"peer"}');
+			storage.appendFromTailSync(file, lastLine => ({
+				content: `${JSON.stringify({ type: "custom", customType: SESSION_EXIT_CUSTOM_TYPE, parentId: JSON.parse(lastLine).id })}\n`,
+				value: undefined,
+			}));
+			expect(Bun.JSONL.parse(await storage.readText(file))).toEqual([
+				{ type: "custom", id: "peer" },
+				{ type: "custom", customType: SESSION_EXIT_CUSTOM_TYPE, parentId: "peer" },
+			]);
+		});
+	}
 
 	it("signal teardown persists the postmortem reason, not the generic dispose", async () => {
 		tempDir = TempDir.createSync("@pi-session-exit-signal-");

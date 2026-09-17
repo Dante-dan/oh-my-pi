@@ -254,7 +254,7 @@ describe("session exit diagnostics", () => {
 		const draft = Promise.withResolvers<void>();
 		const teardown = createSessionTeardown({
 			getDraftText: () => "pending draft",
-			beginDispose: () => activeSession.beginDispose(),
+			beginDispose: () => activeSession.beginDispose({ deferExitRecording: true }),
 			saveDraft: () => draft.promise,
 			disposeSession: reason => activeSession.dispose({ reason }),
 		});
@@ -278,6 +278,60 @@ describe("session exit diagnostics", () => {
 			data: expect.objectContaining({ reason: "sigterm", kind: "signal" }),
 		});
 		await reopened.close();
+	});
+
+	it("records a signal while SDK pre-disposal has only marked the session disposing", async () => {
+		tempDir = TempDir.createSync("@pi-sdk-exit-");
+		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		const manager = SessionManager.create(tempDir.path(), tempDir.path());
+		manager.appendMessage({ ...pendingAssistant, content: [{ type: "text", text: "saved" }], stopReason: "stop" });
+		await manager.flush();
+		const file = manager.getSessionFile();
+		if (!file) throw new Error("Expected session file");
+		const register = postmortem.register;
+		let recorder: ((reason: postmortem.Reason) => void | Promise<void>) | undefined;
+		const registration = spyOn(postmortem, "register").mockImplementation((id, callback, options) => {
+			if (id.startsWith("agent-session:")) recorder = callback;
+			return register(id, callback, options);
+		});
+		try {
+			session = new AgentSession({
+				agent: new Agent({ convertToLlm }),
+				sessionManager: manager,
+				settings: Settings.isolated(),
+				modelRegistry: new ModelRegistry(authStorage),
+			});
+		} finally {
+			registration.mockRestore();
+		}
+		// sdk.ts awaits lifecycle cleanup between beginDispose and originalDispose.
+		// A signal must leave a durable marker before that cleanup finishes.
+		session.beginDispose();
+		if (!recorder) throw new Error("Expected exit recorder");
+		await recorder(postmortem.Reason.SIGTERM);
+		const reopened = await SessionManager.open(file, tempDir.path(), undefined, { suppressBreadcrumb: true });
+		expect(reopened.getLeafEntry()).toMatchObject({
+			type: "custom",
+			customType: SESSION_EXIT_CUSTOM_TYPE,
+			data: expect.objectContaining({ reason: "sigterm", kind: "signal" }),
+		});
+		await reopened.close();
+	});
+
+	it("finds the persisted tail across whitespace-only trailing records", async () => {
+		tempDir = TempDir.createSync("@pi-exit-whitespace-");
+		const storage = new FileSessionStorage();
+		const file = path.join(tempDir.path(), "session.jsonl");
+		// Cross the reverse reader's chunk boundary with spaces, tabs and CR/LF.
+		storage.writeTextSync(file, '{"type":"custom","id":"peer"}\n' + " \t\r\n".repeat(17000) + "\t");
+		storage.appendFromTailSync(file, lastLine => ({
+			content: `${JSON.stringify({ type: "custom", customType: SESSION_EXIT_CUSTOM_TYPE, parentId: JSON.parse(lastLine).id })}\n`,
+			value: undefined,
+		}));
+		expect(Bun.JSONL.parse(await storage.readText(file))).toEqual([
+			{ type: "custom", id: "peer" },
+			{ type: "custom", customType: SESSION_EXIT_CUSTOM_TYPE, parentId: "peer" },
+		]);
 	});
 
 	for (const backend of ["file", "memory"] as const) {
@@ -343,7 +397,7 @@ describe("session exit diagnostics", () => {
 		// reason-specific agent-session recorder — losing the real trigger.
 		const teardown = createSessionTeardown({
 			getDraftText: () => "",
-			beginDispose: () => activeSession.beginDispose(),
+			beginDispose: () => activeSession.beginDispose({ deferExitRecording: true }),
 			saveDraft: async () => {},
 			disposeSession: reason => activeSession.dispose({ reason }),
 		});

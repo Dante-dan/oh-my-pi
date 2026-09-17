@@ -624,6 +624,7 @@ export class AgentSession {
 	#cancelExitRecorder?: () => void;
 	#cancelFatalRecoveryHint?: () => void;
 	#exitRecorded = false;
+	#deferExitRecording = false;
 	#unsubscribeAppendOnly?: () => void;
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
@@ -1808,7 +1809,8 @@ export class AgentSession {
 		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
 			// Signal teardown marks disposal before awaiting the draft. Let its
 			// final drain record the exit, rather than racing maintenance writes.
-			if (this.#isDisposed) return;
+			if (this.#deferExitRecording) return;
+			if (this.#disposeCall) return this.#disposeCall;
 			this.#recordSessionExit(reason);
 		});
 		this.#cancelFatalRecoveryHint = postmortem.registerFatalRecoveryHint(() => {
@@ -4668,7 +4670,10 @@ export class AgentSession {
 	 * call this before their first await — otherwise work started in that async
 	 * gap slips past the disposal guards.
 	 */
-	beginDispose(): void {
+	beginDispose(options: { deferExitRecording?: boolean } = {}): void {
+		// Only a teardown awaited by postmortem may take over exit recording.
+		// SDK pre-disposal alone does not guarantee its async cleanup finishes.
+		if (options.deferExitRecording) this.#deferExitRecording = true;
 		this.#isDisposed = true;
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;

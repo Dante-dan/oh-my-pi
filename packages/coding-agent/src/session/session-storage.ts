@@ -405,7 +405,14 @@ export class FileSessionStorage implements SessionStorage {
 				if (cursor === size) needsSeparator = chunk[length - 1] !== 0x0a;
 				let end = length;
 				if (trimEnd) {
-					while (end > 0 && (chunk[end - 1] === 0x0a || chunk[end - 1] === 0x0d)) end--;
+					while (
+						end > 0 &&
+						(chunk[end - 1] === 0x20 ||
+							chunk[end - 1] === 0x09 ||
+							chunk[end - 1] === 0x0a ||
+							chunk[end - 1] === 0x0d)
+					)
+						end--;
 					if (end === 0) {
 						cursor = start;
 						continue;

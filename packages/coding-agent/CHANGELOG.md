@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Custom sessions can move across filesystems without losing their transcript or artifacts ([#12360](https://github.com/can1357/oh-my-pi/issues/12360), [#12378](https://github.com/can1357/oh-my-pi/pull/12378) by [@Dante-dan](https://github.com/Dante-dan)).
+
 ## [18.2.5] - 2026-09-17
 
 ### Breaking Changes
@@ -22,9 +26,6 @@
 
 ### Fixed
 
-- Custom sessions can move across filesystems without losing their transcript or artifacts ([#12360](https://github.com/can1357/oh-my-pi/issues/12360), [#12378](https://github.com/can1357/oh-my-pi/pull/12378) by [@Dante-dan](https://github.com/Dante-dan)).
-- Fixed the `edit` tool splicing a literal `…` into the file when a `<SM:FIND>` opened or closed with an ellipsis (a line-end `…` spanning the rest of a line, or a whole-line `…` at either edge) and `<SM:PUT>` re-emitted it. An edge gap captures nothing, so the matching `<SM:PUT>` ellipsis now re-emits nothing and the anchor keeps its own newline; an identical `<SM:FIND>`/`<SM:PUT>` pair reports no change instead of writing the marker. A leading gap combined with an inner gap no longer panics.
-- Fixed startup aborting when the plugins directory exists but cannot be read — a sandboxed run, a restrictive mode, or a manifest symlinked into a denied path; the unreadable root is now skipped with a warning.
 - Fixed `edit` auto-repair waiting up to 60 seconds when the `smol` model does not respond; it now times out after 20 seconds and reports repair start and timeout details.
 - Fixed subagents leaving queued parent messages behind after tool interruptions.
 - Fixed a subagent burning its whole run on `yield` calls that never finish it: an incremental-only `yield` turn no longer bypasses the request budget, and the forced final `yield` ends the run ([#12351](https://github.com/can1357/oh-my-pi/pull/12351) by [@pedropaulovc](https://github.com/pedropaulovc)).

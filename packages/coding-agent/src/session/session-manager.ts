@@ -126,6 +126,7 @@ export async function copySessionArtifacts(
 	sourceSessionFile: string,
 	destinationSessionFile: string,
 	destinationSessionId: string,
+	sourceSessionId: string | undefined,
 ): Promise<void> {
 	const sourceArtifactsDir = artifactsDirectoryFor(sourceSessionFile);
 	const destinationArtifactsDir = artifactsDirectoryFor(destinationSessionFile);
@@ -136,7 +137,7 @@ export async function copySessionArtifacts(
 		const sourceStat = await fs.promises.stat(sourceArtifactsDir);
 		if (sourceStat.isDirectory()) {
 			await fs.promises.cp(sourceArtifactsDir, destinationArtifactsDir, { recursive: true });
-			await rebindArtifactProvenance(destinationArtifactsDir, destinationSessionId);
+			await rebindArtifactProvenance(destinationArtifactsDir, sourceSessionId, destinationSessionId);
 		}
 	} catch (error) {
 		if (!isEnoent(error)) {
@@ -1926,7 +1927,7 @@ export class SessionManager {
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 
 		await this.#rewriteAtomically();
-		await copySessionArtifacts(oldSessionFile, this.#sessionFile, this.#sessionId);
+		await copySessionArtifacts(oldSessionFile, this.#sessionFile, this.#sessionId, parentSessionId);
 		return { oldSessionFile, newSessionFile: this.#sessionFile };
 	}
 
@@ -3355,7 +3356,7 @@ export class SessionManager {
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		if (options?.copyArtifacts !== false) {
-			await copySessionArtifacts(sourcePath, manager.#sessionFile!, manager.#sessionId);
+			await copySessionArtifacts(sourcePath, manager.#sessionFile!, manager.#sessionId, sourceHeader?.id);
 		}
 		return manager;
 	}

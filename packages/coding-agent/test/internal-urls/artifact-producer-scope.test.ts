@@ -8,6 +8,7 @@ import {
 	registerArtifactsDir,
 	resetRegisteredArtifactDirsForTests,
 } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { ArtifactManager, readArtifactProvenance } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 
 describe("artifact:// producer scope", () => {
@@ -51,6 +52,48 @@ describe("artifact:// producer scope", () => {
 		await expect(crossRead).rejects.not.toThrow("Available:");
 		await expect(handler.resolve(parseInternalUrl("artifact://999"), context)).rejects.not.toThrow("Available:");
 		expect(await handler.complete("", context)).toEqual([{ value: childId }]);
+	});
+
+	it.each(["fork", "forkFrom"] as const)("%s preserves child provenance in shared artifact storage", async kind => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "artifact-fork-producers-"));
+		roots.push(root);
+		const parent = SessionManager.create(root, root);
+		parent.appendMessage({ role: "user", content: "fork me", timestamp: 1 });
+		await parent.ensureOnDisk();
+		const parentId = await parent.saveArtifact("parent output", "read");
+		if (!parentId) throw new Error("Expected parent artifact");
+		const shared = parent.getArtifactManager()!;
+		const childId = await shared.save("child secret", "read", "child-session");
+		const source = parent.getSessionFile()!;
+		const forked =
+			kind === "fork" ? (await parent.fork(), parent) : await SessionManager.forkFrom(source, root, root);
+		try {
+			const dir = forked.getSessionFile()!.slice(0, -".jsonl".length);
+			const handler = new ArtifactProtocolHandler();
+			const context = {
+				sessionId: forked.getSessionId(),
+				localProtocolOptions: {
+					getArtifactsDir: () => dir,
+					artifactResolutionScope: "producer" as const,
+				},
+			};
+			expect((await handler.resolve(parseInternalUrl(`artifact://${parentId}`), context)).content).toBe(
+				"parent output",
+			);
+			await expect(handler.resolve(parseInternalUrl(`artifact://${childId}`), context)).rejects.toThrow("not found");
+			expect(await handler.complete("", context)).toEqual([{ value: parentId }]);
+			expect(
+				(
+					await handler.resolve(parseInternalUrl(`artifact://${childId}`), {
+						...context,
+						sessionId: "child-session",
+					})
+				).content,
+			).toBe("child secret");
+		} finally {
+			await forked.close();
+			if (forked !== parent) await parent.close();
+		}
 	});
 
 	it("does not resolve or enumerate numeric-named non-artifact files in shared scope", async () => {

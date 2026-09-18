@@ -40,11 +40,17 @@ export async function readArtifactProvenance(dir: string, id: string): Promise<A
 	}
 }
 
-/** Reassign valid artifact sidecars copied into a fork to the forked session. */
-export async function rebindArtifactProvenance(dir: string, producerSessionId: string): Promise<void> {
+/** Reassign only the source session's own sidecars, preserving other producers in shared storage. */
+export async function rebindArtifactProvenance(
+	dir: string,
+	sourceSessionId: string | undefined,
+	producerSessionId: string,
+): Promise<void> {
 	for (const file of await fs.readdir(dir)) {
 		const match = /^\.artifact-(\d+)\.json$/.exec(file);
-		if (!match || !(await readArtifactProvenance(dir, match[1]!))) continue;
+		if (!match || !sourceSessionId) continue;
+		const previous = await readArtifactProvenance(dir, match[1]!);
+		if (previous?.producerSessionId !== sourceSessionId) continue;
 		const provenance: ArtifactProvenance = {
 			version: ARTIFACT_PROVENANCE_VERSION,
 			producerSessionId,

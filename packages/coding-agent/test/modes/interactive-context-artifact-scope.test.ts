@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { refreshAssistantMessageLinkTargets } from "@oh-my-pi/pi-coding-agent/modes/utils/interactive-context-helpers";
+import { refreshAssistantMessageLinkTargets } from "@oh-my-pi/pi-tui/prompt/interactive-context-helpers";
+import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { ArtifactManager } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 
@@ -37,7 +38,10 @@ describe("interactive artifact link targets", () => {
 			skills: [],
 			ttsrManager: undefined,
 		};
-		const ctx = { viewSession: session } as unknown as InteractiveModeContext;
+		const ctx = {
+			viewSession: session,
+			resolveAssistantMessageLinks: InteractiveMode.prototype.resolveAssistantMessageLinks,
+		} as unknown as InteractiveModeContext;
 		const ownHref = `artifact://${childId}`;
 		const parentHref = `artifact://${parentId}`;
 		const targets = await refreshAssistantMessageLinkTargets(ctx, [

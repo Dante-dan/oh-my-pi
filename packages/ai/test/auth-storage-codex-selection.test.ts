@@ -2540,9 +2540,9 @@ describe("AuthStorage codex oauth ranking", () => {
 			...healthyHeaders,
 			"x-codex-secondary-used-percent": "100",
 		};
-		expect(
-			authStorage.ingestUsageHeaders("openai-codex", exhaustedHeaders, { sessionId, responseStatus: 429 }),
-		).toBe(true);
+		expect(authStorage.ingestUsageHeaders("openai-codex", exhaustedHeaders, { sessionId, responseStatus: 429 })).toBe(
+			true,
+		);
 
 		// The next request for the same session must rotate to the sibling
 		// without a wire 429: the ingested snapshot blocks the sticky account.

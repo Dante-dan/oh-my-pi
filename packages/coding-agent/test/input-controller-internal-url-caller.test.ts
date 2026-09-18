@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";

@@ -262,11 +262,11 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// cannot advance it, so retain the established polling bounds above.
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
-			let renderedMappings = prompt.split("\n").filter((line) => line.startsWith('- "row_'));
+			let renderedMappings = prompt.split("\n").filter(line => line.startsWith('- "row_'));
 			while ((!prompt.includes(SERVER_INSTRUCTIONS) || renderedMappings.length !== 64) && Date.now() < deadline) {
 				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
-				renderedMappings = prompt.split("\n").filter((line) => line.startsWith('- "row_'));
+				renderedMappings = prompt.split("\n").filter(line => line.startsWith('- "row_'));
 			}
 
 			expect(prompt).toContain(SERVER_INSTRUCTIONS);

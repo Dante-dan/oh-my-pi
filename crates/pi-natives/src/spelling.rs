@@ -19,7 +19,7 @@ pub struct SpellingRange {
 
 #[cfg(target_os = "macos")]
 mod platform {
-	use std::sync::LazyLock;
+	use std::{mem::MaybeUninit, sync::LazyLock};
 
 	use napi::{Error, Result, Status};
 	use objc2::rc::Retained;
@@ -43,15 +43,40 @@ mod platform {
 		sender
 	});
 	static APP_KIT_LOADED: LazyLock<bool> = LazyLock::new(|| {
-		// SAFETY: AppKit documents `NSApplicationLoad` as process-global and
-		// idempotent; `LazyLock` guarantees this process calls it at most once.
-		unsafe { NSApplicationLoad() }
+		// Loading AppKit promotes a bundle-less command-line process to a regular
+		// LaunchServices application. OMP is a TUI, so establish an agent identity
+		// first: it may use AppKit services but must not own a Dock tile. AppKit
+		// documents `NSApplicationLoad` as process-global and idempotent;
+		// `LazyLock` guarantees this process calls it at most once.
+		unsafe {
+			let mut psn = MaybeUninit::<ProcessSerialNumber>::uninit();
+			if GetCurrentProcess(psn.as_mut_ptr()) != 0 {
+				return false;
+			}
+			if TransformProcessType(psn.as_ptr(), PROCESS_TRANSFORM_TO_UI_ELEMENT) != 0 {
+				return false;
+			}
+			NSApplicationLoad()
+		}
 	});
 	const NS_NOT_FOUND: usize = isize::MAX as usize;
+	const PROCESS_TRANSFORM_TO_UI_ELEMENT: u32 = 4;
+
+	#[repr(C)]
+	struct ProcessSerialNumber {
+		high: u32,
+		low:  u32,
+	}
 
 	#[link(name = "AppKit", kind = "framework")]
 	unsafe extern "C" {
 		fn NSApplicationLoad() -> bool;
+	}
+
+	#[link(name = "ApplicationServices", kind = "framework")]
+	unsafe extern "C" {
+		fn GetCurrentProcess(psn: *mut ProcessSerialNumber) -> i16;
+		fn TransformProcessType(psn: *const ProcessSerialNumber, state: u32) -> i32;
 	}
 
 	fn checker() -> Result<Retained<NSSpellChecker>> {

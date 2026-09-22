@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Kept macOS TUI sessions out of LaunchServices' foreground application list when native spelling initializes, preventing one borrowed terminal Dock tile per session ([#12491](https://github.com/can1357/oh-my-pi/issues/12491)).
 - Fixed a stale workspace addon failing as `<symbol> is not a function` inside whichever tool used it first; the missing export now names the addon, the loaded and expected releases, and `bun run build:native` ([#12698](https://github.com/can1357/oh-my-pi/pull/12698) by [@iacore](https://github.com/iacore)).
 
 ## [18.2.7] - 2026-09-21

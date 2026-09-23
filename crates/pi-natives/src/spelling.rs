@@ -42,21 +42,21 @@ mod platform {
 			.expect("failed to spawn the native spelling thread");
 		sender
 	});
-const NS_NOT_FOUND: usize = isize::MAX as usize;
+	const NS_NOT_FOUND: usize = isize::MAX as usize;
 
-fn checker() -> Retained<NSSpellChecker> {
-	// Deliberately does NOT call `NSApplicationLoad()` or touch
-	// `[NSApplication sharedApplication]`. Loading the application object
-	// registers the process with LaunchServices as a foreground app; a
-	// bundle-less CLI then gets adopted into the controlling terminal's
-	// identity and takes a Dock tile. The spell server protocol
-	// (`sharedSpellChecker`/`checkString`) works on the dedicated spelling
-	// thread without any NSApplication instance (verified: zero
-	// launchservicesd CHECKIN, spelling results unchanged).
-	let checker = NSSpellChecker::sharedSpellChecker();
-	checker.setAutomaticallyIdentifiesLanguages(true);
-	checker
-}
+	fn checker() -> Retained<NSSpellChecker> {
+		// Deliberately does NOT call `NSApplicationLoad()` or touch
+		// `[NSApplication sharedApplication]`. Loading the application object
+		// registers the process with LaunchServices as a foreground app; a
+		// bundle-less CLI then gets adopted into the controlling terminal's
+		// identity and takes a Dock tile. The spell server protocol
+		// (`sharedSpellChecker`/`checkString`) works on the dedicated spelling
+		// thread without any NSApplication instance (verified: zero
+		// launchservicesd CHECKIN, spelling results unchanged).
+		let checker = NSSpellChecker::sharedSpellChecker();
+		checker.setAutomaticallyIdentifiesLanguages(true);
+		checker
+	}
 
 	pub async fn run<T>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T>
 	where

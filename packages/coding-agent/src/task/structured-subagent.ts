@@ -294,7 +294,10 @@ function invokedSkillModel(session: ToolSession): string | string[] | undefined 
 		const skill = session.skills?.find(candidate => candidate.name === name);
 		if (!skill) return undefined;
 		// Foreign providers may use `model` for their own, incompatible skill semantics.
-		const direct = skill.source.startsWith("native:") ? skill.frontmatter?.model : undefined;
+		const provider = skill.source.split(":", 1)[0];
+		const direct = ["native", "omp-managed", "omp-plugins", "custom"].includes(provider)
+			? skill.frontmatter?.model
+			: undefined;
 		const metadata = skill.frontmatter?.metadata;
 		const namespaced =
 			metadata && typeof metadata === "object" && "omp.model" in metadata ? metadata["omp.model"] : undefined;

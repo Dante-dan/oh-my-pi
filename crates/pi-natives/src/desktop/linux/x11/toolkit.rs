@@ -28,6 +28,19 @@ pub(super) fn class_drops_synthetic(wm_class: &str) -> bool {
 		.any(|needle| class.contains(needle))
 }
 
+/// MPX core events also reach core-protocol window managers, which can
+/// activate/raise the target. Keep them disabled, and reject legacy clients
+/// rather than pretending XI2 input reaches them.
+pub(super) fn requires_core_events(wm_class: &str, pid: Option<u32>) -> bool {
+	let class = wm_class.to_ascii_lowercase();
+	class.split('\0').any(|part| matches!(part, "xterm" | "uxterm" | "rxvt" | "urxvt" | "xev" | "tk"))
+		|| pid.is_some_and(|pid| {
+			fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
+				maps.contains("/libtk8") || maps.contains("/libtk9") || maps.contains("/libXm.so")
+			})
+		})
+}
+
 /// Whether process `pid` runs a toolkit that silently drops `XSendEvent`
 /// input, judged from its mapped libraries and Chromium's helper processes.
 pub(super) fn process_drops_synthetic(pid: u32) -> bool {

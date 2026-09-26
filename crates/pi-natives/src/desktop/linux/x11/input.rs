@@ -3,8 +3,8 @@
 //! - Desktop targets drive the user's real pointer and keyboard through
 //!   `XTest`.
 //! - Background window targets prefer the XI2-MPX virtual master pair (real
-//!   input that never moves the user's pointer or core focus), refusing when
-//!   the point is covered by another application. Without MPX they fall back to
+//!   XI2-only input on independent devices), refusing when the point is covered
+//!   by another window. Without MPX they fall back to
 //!   `XSendEvent`, except for toolkits known to drop synthetic events, which
 //!   get an explicit `background_unavailable` instead of a silent no-op.
 //! - Foreground (`takeover`) activates the target, confirms the WM made it the
@@ -12,6 +12,7 @@
 //!   pointer position and previously active window.
 
 use std::{
+	cell::Cell,
 	sync::Arc,
 	thread,
 	time::{Duration, Instant},
@@ -69,6 +70,8 @@ pub struct X11Input {
 	root:            Window,
 	atoms:           Atoms,
 	keymap:          Keymap,
+	takeover_target: Option<Window>,
+	takeover_pointer: Cell<Option<(i16, i16)>>,
 	/// Session-lived virtual master pair, created on first background use.
 	mpx:             Option<Mpx>,
 	/// Why the XI2-MPX route is unusable. Set once, so a host that cannot
@@ -112,7 +115,10 @@ impl X11Input {
 		let keymap = Keymap::core(&conn)?;
 		let atoms = Atoms::intern(&conn)?;
 		let mpx_unavailable = mpx_probe(&conn).err();
-		Ok(Self { conn, root, atoms, keymap, mpx: None, mpx_unavailable })
+		Ok(Self {
+			conn, root, atoms, keymap, takeover_target: None,
+			takeover_pointer: Cell::new(None), mpx: None, mpx_unavailable,
+		})
 	}
 
 	pub(crate) fn pointer(
@@ -121,16 +127,27 @@ impl X11Input {
 		event: PointerEvent,
 		mode: DeliveryMode,
 	) -> CoreResult<()> {
+		if matches!(target, Target::Desktop) || mode == DeliveryMode::Foreground {
+			self.keymap = Keymap::core(&self.conn)?;
+		}
 		match (target, mode) {
 			(Target::Desktop, _) => self.pointer_xtest(&event),
 			(Target::Window(id), DeliveryMode::Foreground) => {
 				let window = parse_window(id)?;
+				pointer_endpoint(&event)?;
 				self.with_foreground(window, FOREGROUND_POINTER_SETTLE, |this| {
 					this.pointer_xtest(&event)
 				})
 			},
 			(Target::Window(id), DeliveryMode::Background) => {
 				let window = parse_window(id)?;
+				if self.requires_core_events(window) {
+					if self.drops_synthetic_input(window) {
+						return Err(background_unavailable(id, event_kind(&event),
+							"its toolkit needs core input, which cannot preserve MPX focus isolation"));
+					}
+					return self.pointer_send_event(window, &event);
+				}
 				let reason = match ensure_mpx(&mut self.mpx, &mut self.mpx_unavailable) {
 					Ok(mpx) => {
 						let wm = Wm { conn: &self.conn, root: self.root, atoms: &self.atoms };
@@ -182,6 +199,7 @@ impl X11Input {
 	}
 
 	fn keys(&mut self, target: &Target, keys: Keys<'_>, mode: DeliveryMode) -> CoreResult<()> {
+		self.keymap = Keymap::core(&self.conn)?;
 		match (target, mode) {
 			(Target::Desktop, _) => {
 				let steps = keys.plan(&self.keymap)?;
@@ -201,6 +219,14 @@ impl X11Input {
 	}
 
 	fn background_keys(&mut self, id: &str, window: Window, keys: Keys<'_>) -> CoreResult<()> {
+		if self.requires_core_events(window) {
+			if self.drops_synthetic_input(window) {
+				return Err(background_unavailable(id, keys.kind(),
+					"its toolkit needs core input, which cannot preserve MPX focus isolation"));
+			}
+			let steps = keys.plan(&self.keymap)?;
+			return self.send_key_steps(window, &steps);
+		}
 		let reason = match ensure_mpx(&mut self.mpx, &mut self.mpx_unavailable) {
 			Ok(mpx) => {
 				let wm = Wm { conn: &self.conn, root: self.root, atoms: &self.atoms };
@@ -208,31 +234,21 @@ impl X11Input {
 				if let Some(pid) = pid
 					&& let Some(popup) = wm.grab_popup_of(pid)
 				{
-					// The target's own popup holds a keyboard grab, so the server
-					// drops keys from every other master keyboard. The core
-					// keyboard reaches the grab holder without any focus change,
-					// but only while the core focus is the target's: otherwise a
-					// grab ending mid-text would send the rest to the user's app.
-					if wm.focus_owner_pid() != Some(pid) {
-						return Err(background_unavailable(
-							id,
-							keys.kind(),
-							&format!(
-								"its popup window {popup} holds the keyboard grab and the keyboard focus \
-								 belongs to another application"
-							),
-						));
-					}
-					let steps = keys.plan(&self.keymap)?;
-					return self.xtest_steps(&steps);
+					return Err(background_unavailable(id, keys.kind(), &format!(
+						"popup {popup} may hold an input grab; background input cannot safely \
+						 substitute the user's core keyboard"
+					)));
 				}
 				let snapshot = FocusSnapshot::capture(wm);
 				let result = match keys {
 					Keys::Text(text) => mpx.type_text(window, text),
 					Keys::Chord(chord) => mpx.key_chord(window, chord),
 				};
-				snapshot.restore(wm, pid);
-				return result;
+				let isolation = snapshot.check(wm, window);
+				if isolation.is_err() {
+					mpx.inhibit();
+				}
+				return result.and(isolation);
 			},
 			Err(reason) => reason,
 		};
@@ -269,9 +285,18 @@ impl X11Input {
 			self.restore_activation(window, ewmh, previous_active, previous_focus);
 			return Err(error);
 		}
+		self.takeover_target = Some(window);
+		self.takeover_pointer.set(None);
 		let result = body(self);
+		self.takeover_target = None;
+		let pointer_after = self.takeover_pointer.take();
 		thread::sleep(FOREGROUND_RESTORE_SETTLE);
-		if let Some(pointer) = pointer {
+		// A physical motion during the action is the user's new position.
+		// Keyboard-only actions never warp the pointer, even during restore.
+		if let Some(pointer) = pointer
+			&& pointer_after.is_some()
+			&& self.core_pointer() == pointer_after
+		{
 			self.restore_core_pointer(pointer);
 		}
 		self.restore_activation(window, ewmh, previous_active, previous_focus);
@@ -329,24 +354,22 @@ impl X11Input {
 			let Some(previous) = previous_active.filter(|&previous| previous != window) else {
 				return;
 			};
+			// Never overwrite a deliberate switch to a third window.
+			if wm.active_window() != Some(window)
+				|| !wm.input_focus().is_some_and(|(focus, _)| wm.is_within(focus, window))
+			{
+				return;
+			}
+			let _ = wm.request_activation(previous, Some(window));
 			let deadline = Instant::now() + FOREGROUND_RESTORE_BUDGET;
-			let mut sent = 0;
-			while Instant::now() < deadline {
-				let active = wm.active_window();
-				if active == Some(previous) {
-					return;
-				}
-				if sent < 2 {
-					sent += 1;
-					let _ = wm.request_activation(previous, active);
-				}
-				thread::sleep(FOREGROUND_POLL * 4);
+			while Instant::now() < deadline && wm.active_window() == Some(window) {
+				thread::sleep(FOREGROUND_POLL);
 			}
 			return;
 		}
 		if let Some((focus, revert)) = previous_focus
 			&& focus > 1
-			&& wm.input_focus().map(|(now, _)| now) != Some(focus)
+			&& wm.input_focus().is_some_and(|(now, _)| wm.is_within(now, window))
 			&& let Ok(cookie) = self.conn.set_input_focus(revert, focus, CURRENT_TIME)
 		{
 			let _ = cookie.check();
@@ -374,6 +397,8 @@ impl X11Input {
 	}
 
 	fn pointer_send_event(&self, window: Window, event: &PointerEvent) -> CoreResult<()> {
+		// Validate every drag waypoint before a synthetic press can be sent.
+		pointer_endpoint(event)?;
 		match event {
 			PointerEvent::Click { x, y, button, count, modifiers } => {
 				let (root_x, root_y, event_x, event_y) = self.coordinates(window, *x, *y)?;
@@ -433,14 +458,15 @@ impl X11Input {
 			PointerEvent::Move { .. } | PointerEvent::Scroll { .. } => (Modifiers::default(), None),
 		};
 		let modifier_keycodes = self.keymap.modifier_keycodes(modifiers)?;
+		self.check_released_keys(modifier_keycodes.iter().copied())?;
 		let mut pressed = Vec::with_capacity(modifier_keycodes.len());
 		let mut result = Ok(());
 		for &keycode in &modifier_keycodes {
+			pressed.push(keycode);
 			if let Err(error) = self.xtest_key(keycode, true) {
 				result = Err(error);
 				break;
 			}
-			pressed.push(keycode);
 		}
 		if result.is_ok() {
 			result = self.xtest_gesture(event);
@@ -504,6 +530,7 @@ impl X11Input {
 	}
 
 	fn xtest_steps(&self, steps: &[KeyStep]) -> CoreResult<()> {
+		self.check_released_keys(steps.iter().filter(|step| step.press).map(|step| step.keycode))?;
 		keymap::run_steps(steps, |step| self.xtest_key(step.keycode, step.press))?;
 		self.conn.flush().map_err(input_failed)
 	}
@@ -526,6 +553,9 @@ impl X11Input {
 	}
 
 	fn xtest_key(&self, keycode: u8, press: bool) -> CoreResult<()> {
+		if press {
+			self.check_takeover_focus()?;
+		}
 		self
 			.conn
 			.xtest_fake_input(
@@ -728,6 +758,10 @@ impl X11Input {
 	}
 
 	fn xtest_motion(&self, x: i16, y: i16) -> CoreResult<()> {
+		self.check_takeover_focus()?;
+		if self.takeover_target.is_some() {
+			self.takeover_pointer.set(Some((x, y)));
+		}
 		self
 			.conn
 			.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, CURRENT_TIME, self.root, x, y, 0)
@@ -737,6 +771,15 @@ impl X11Input {
 	}
 
 	fn xtest_button(&self, detail: u8, press: bool) -> CoreResult<()> {
+		if press {
+			self.check_takeover_focus()?;
+			if let Some(window) = self.takeover_target {
+				let (x, y) = self.core_pointer().ok_or_else(|| {
+					DesktopError::input_failed("cannot verify the takeover pointer position")
+				})?;
+				self.wm().check_pointer_target(window, x, y)?;
+			}
+		}
 		self
 			.conn
 			.xtest_fake_input(
@@ -755,6 +798,37 @@ impl X11Input {
 			.map_err(input_failed)?
 			.check()
 			.map_err(input_failed)
+	}
+
+	fn check_released_keys(&self, keycodes: impl IntoIterator<Item = u8>) -> CoreResult<()> {
+		let state = self.conn.query_keymap().map_err(input_failed)?.reply().map_err(input_failed)?;
+		if keycodes.into_iter().any(|code| state.keys[usize::from(code / 8)] & (1 << (code % 8)) != 0) {
+			return Err(DesktopError::input_failed(
+				"a requested key is already physically held; refusing to release the user's key",
+			));
+		}
+		Ok(())
+	}
+
+	fn check_takeover_focus(&self) -> CoreResult<()> {
+		if let Some(window) = self.takeover_target {
+			let wm = self.wm();
+			if !wm.is_focused(window, wm.tracks_active_window()) {
+				return Err(DesktopError::input_failed(
+					"takeover target lost focus during input; remaining input was cancelled",
+				));
+			}
+		}
+		Ok(())
+	}
+
+	fn requires_core_events(&self, window: Window) -> bool {
+		let class = self.conn
+			.get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1024)
+			.ok().and_then(|cookie| cookie.reply().ok())
+			.map(|reply| String::from_utf8_lossy(&reply.value).into_owned())
+			.unwrap_or_default();
+		toolkit::requires_core_events(&class, self.wm().owning_pid(window))
 	}
 
 	/// Whether the client behind `window` is known to drop `XSendEvent`
@@ -792,8 +866,8 @@ fn ensure_mpx<'a>(
 }
 
 /// Delivers a background pointer event through the virtual master pointer,
-/// refusing up front when the point is not on the target, and undoing any
-/// focus change the action provoked.
+/// refusing up front when the point is not on the target, and checking for
+/// focus side effects without reactivating or raising the user's windows.
 fn pointer_mpx(wm: Wm<'_>, mpx: &mut Mpx, window: Window, event: &PointerEvent) -> CoreResult<()> {
 	let path = match event {
 		PointerEvent::Click { x, y, .. }
@@ -817,8 +891,11 @@ fn pointer_mpx(wm: Wm<'_>, mpx: &mut Mpx, window: Window, event: &PointerEvent) 
 		PointerEvent::Drag { button, modifiers, .. } => mpx.drag(window, &path, *button, *modifiers),
 		PointerEvent::Scroll { dx, dy, .. } => mpx.scroll(window, (x, y), *dx, *dy),
 	};
-	snapshot.restore(wm, wm.owning_pid(window));
-	result
+	let isolation = snapshot.check(wm, window);
+	if isolation.is_err() {
+		mpx.inhibit();
+	}
+	result.and(isolation)
 }
 
 /// Cheap up-front check (no device creation) for hosts where the MPX route
@@ -853,6 +930,20 @@ fn mpx_probe(conn: &RustConnection) -> Result<(), String> {
 	match version {
 		Some(version) if (version.major_version, version.minor_version) >= (2, 2) => Ok(()),
 		_ => Err("the X server lacks XInput 2.2".to_owned()),
+	}
+}
+
+fn pointer_endpoint(event: &PointerEvent) -> CoreResult<(i16, i16)> {
+	match event {
+		PointerEvent::Click { x, y, .. } | PointerEvent::Move { x, y }
+		| PointerEvent::Scroll { x, y, .. } => validate_xtest_point(*x, *y),
+		PointerEvent::Drag { path, .. } => {
+			let mut last = None;
+			for &(x, y) in path {
+				last = Some(validate_xtest_point(x, y)?);
+			}
+			last.ok_or_else(|| DesktopError::input_failed("drag path is empty"))
+		}
 	}
 }
 

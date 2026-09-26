@@ -165,6 +165,29 @@ pub(super) fn is_electron(pid: libc::pid_t) -> bool {
 		})
 }
 
+/// Use process identity, not a substring of the display name ("Arc" also
+/// matches Archive Utility). Electron applications have arbitrary bundle ids.
+pub(super) fn is_chromium(pid: libc::pid_t) -> bool {
+	is_electron(pid)
+		|| NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+			.and_then(|app| app.bundleIdentifier())
+			.is_some_and(|bundle| is_chromium_bundle(&bundle.to_string()))
+}
+
+fn is_chromium_bundle(bundle: &str) -> bool {
+	[
+		"com.google.Chrome",
+		"org.chromium.Chromium",
+		"com.brave.Browser",
+		"com.microsoft.edgemac",
+		"company.thebrowser.Browser",
+		"com.vivaldi.Vivaldi",
+		"com.operasoftware.Opera",
+	]
+	.iter()
+	.any(|base| bundle == *base || bundle.strip_prefix(*base).is_some_and(|suffix| suffix.starts_with('.')))
+}
+
 /// Whether `pid` is Apple's Screen Sharing client.
 ///
 /// Screen Sharing forwards physical virtual-key transitions to the remote
@@ -174,6 +197,26 @@ pub(super) fn is_screen_sharing(pid: libc::pid_t) -> bool {
 	NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
 		.and_then(|app| app.bundleIdentifier())
 		.is_some_and(|bundle| bundle.isEqualToString(ns_string!("com.apple.ScreenSharing")))
+}
+
+/// Terminal AX text areas represent a rendered grid, not the pty input. Even a
+/// successful AXSelectedText/AXValue write is not proof that the shell received it.
+pub(super) fn is_terminal(pid: libc::pid_t) -> bool {
+	NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+		.and_then(|app| app.bundleIdentifier())
+		.is_some_and(|bundle| matches!(
+			bundle.to_string().as_str(),
+			"co.zeit.hyper"
+				| "com.apple.Terminal"
+				| "com.github.wez.wezterm"
+				| "com.googlecode.iterm2"
+				| "com.mitchellh.ghostty"
+				| "dev.warp.Warp-Stable"
+				| "dev.zed.Zed.Helper"
+				| "io.alacritty"
+				| "net.kovidgoyal.kitty"
+				| "org.alacritty"
+		))
 }
 
 #[cfg(test)]
@@ -200,6 +243,14 @@ mod tests {
 		] {
 			assert!(!is_tk_image(path), "{path}");
 		}
+	}
+
+	#[test]
+	fn chromium_identity_does_not_match_unrelated_display_names() {
+		assert!(is_chromium_bundle("com.google.Chrome.canary"));
+		assert!(is_chromium_bundle("company.thebrowser.Browser"));
+		assert!(!is_chromium_bundle("com.apple.archiveutility"));
+		assert!(!is_chromium_bundle("com.google.ChromeNotABrowser"));
 	}
 
 	#[test]

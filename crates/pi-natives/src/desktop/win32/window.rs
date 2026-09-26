@@ -17,27 +17,30 @@ use windows_sys::{
 			TOKEN_QUERY, TokenIntegrityLevel,
 		},
 		System::Threading::{
-			AttachThreadInput, GetCurrentProcess, GetCurrentThreadId, OpenProcess, OpenProcessToken,
-			PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+			GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+			PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 		},
 		UI::{
-			Input::KeyboardAndMouse::{
-				EnableWindow, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-				VK_NONAME,
+			HiDpi::{
+				DPI_AWARENESS_CONTEXT, GetWindowDpiAwarenessContext,
+				PhysicalToLogicalPointForPerMonitorDPI, SetThreadDpiAwarenessContext,
 			},
+			Input::KeyboardAndMouse::IsWindowEnabled,
 			WindowsAndMessaging::{
 				CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx,
-				EnumChildWindows, GA_PARENT, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, GWL_EXSTYLE,
-				GetAncestor, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongW,
-				GetWindowThreadProcessId, IsChild, IsHungAppWindow, SetForegroundWindow,
-				SetWindowLongW, WS_EX_NOACTIVATE,
+				EnumChildWindows, GA_PARENT, GA_ROOT, GUITHREADINFO, GetAncestor, GetClassNameW,
+				GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, IsChild,
+				IsWindowVisible, SetForegroundWindow,
 			},
 		},
 	},
 	core::BOOL,
 };
 
-use super::delivery::is_chromium_class;
+use super::{
+	super::error::{CoreResult, DesktopError},
+	delivery::{is_chromium_class, is_wpf_class},
+};
 
 /// Top-level classes that host XAML/UWP/WinUI content.
 const XAML_HOST_CLASSES: [&str; 4] = [
@@ -57,10 +60,6 @@ const XAML_HOST_EXECUTABLES: [&str; 6] = [
 	"photos.exe",
 	"systemsettings.exe",
 ];
-
-/// How long a target keeps its activation shield after posted input or a UI
-/// Automation pattern, covering handlers that run asynchronously.
-const ACTIVATION_SETTLE: Duration = Duration::from_millis(50);
 
 /// Top-level window that owns `hwnd`, or `hwnd` itself when it has none.
 pub(super) fn root(hwnd: HWND) -> HWND {
@@ -134,33 +133,78 @@ pub(super) fn has_chromium_descendant(hwnd: HWND) -> bool {
 /// child-window controls see input for the region they own.
 pub(super) fn deepest_child(root: HWND, screen: POINT) -> Option<(HWND, POINT)> {
 	let mut current = root;
-	let mut client = screen;
-	// SAFETY: `client` is writable; Win32 validates the handle.
-	if unsafe { ScreenToClient(current, &mut client) } == 0 {
-		return None;
-	}
 	for _ in 0..32 {
-		// SAFETY: scalar arguments; Win32 validates the handle.
-		let child = unsafe {
-			ChildWindowFromPointEx(
-				current,
-				client,
-				CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT,
-			)
-		};
-		// SAFETY: IsChild validates both handles.
-		if child.is_null() || child == current || unsafe { IsChild(root, child) } == 0 {
-			break;
+		let (client, child) = in_window_dpi(current, || {
+			let client = physical_to_client(current, screen)?;
+			// SAFETY: scalar arguments; Win32 validates the handle. The point
+			// and this thread use the current window's DPI coordinate regime.
+			let child = unsafe {
+				ChildWindowFromPointEx(
+					current,
+					client,
+					CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT,
+				)
+			};
+			Some((client, child))
+		})??;
+		// ChildWindowFromPointEx returns null outside the parent's client
+		// rectangle, not the parent. Never post non-client coordinates as a
+		// successful client click on the frame.
+		if child.is_null() {
+			return None;
 		}
-		let mut child_client = screen;
-		// SAFETY: `child_client` is writable; `child` is a live descendant.
-		if unsafe { ScreenToClient(child, &mut child_client) } == 0 {
-			break;
+		// SAFETY: IsChild validates both handles.
+		if child == current || unsafe { IsChild(root, child) } == 0 {
+			return Some((current, client));
 		}
 		current = child;
-		client = child_client;
 	}
-	Some((current, client))
+	None
+}
+
+/// Executes a synchronous coordinate query in the target window's DPI
+/// context, restoring only this thread's context on return or unwind.
+fn in_window_dpi<T>(hwnd: HWND, query: impl FnOnce() -> T) -> Option<T> {
+	struct RestoreDpi(DPI_AWARENESS_CONTEXT);
+	impl Drop for RestoreDpi {
+		fn drop(&mut self) {
+			// SAFETY: this is the context returned by the same thread's
+			// successful SetThreadDpiAwarenessContext call below.
+			unsafe { SetThreadDpiAwarenessContext(self.0) };
+		}
+	}
+	// SAFETY: Win32 validates hwnd and the context it returns.
+	let previous = unsafe {
+		let context = GetWindowDpiAwarenessContext(hwnd);
+		if context.is_null() {
+			return None;
+		}
+		SetThreadDpiAwarenessContext(context)
+	};
+	if previous.is_null() {
+		return None;
+	}
+	let _restore = RestoreDpi(previous);
+	Some(query())
+}
+
+/// Converts physical screen coordinates to the target's logical screen
+/// coordinates (also required by posted wheel and WM_NCHITTEST messages).
+pub(super) fn logical_screen_point(hwnd: HWND, mut screen: POINT) -> Option<POINT> {
+	// SAFETY: screen is writable and Win32 validates hwnd. This API explicitly
+	// uses the target's DPI awareness regardless of the calling thread's.
+	(unsafe { PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut screen) } != 0).then_some(screen)
+}
+
+fn physical_to_client(hwnd: HWND, screen: POINT) -> Option<POINT> {
+	let mut client = logical_screen_point(hwnd, screen)?;
+	// SAFETY: client is writable; caller has entered hwnd's DPI context.
+	(unsafe { ScreenToClient(hwnd, &mut client) } != 0).then_some(client)
+}
+
+/// Target-DPI client coordinates for a physical screen point.
+pub(super) fn client_point(hwnd: HWND, screen: POINT) -> Option<POINT> {
+	in_window_dpi(hwnd, || physical_to_client(hwnd, screen))?
 }
 
 /// Focused descendant of `root` across every UI thread that owns part of its
@@ -169,8 +213,9 @@ pub(super) fn deepest_child(root: HWND, screen: POINT) -> Option<(HWND, POINT)> 
 /// Top-level window procedures do not forward keyboard messages to embedded
 /// editors (Scintilla, `RichEdit`, `WebView2`), and embedded renderers often
 /// keep their focused child on another thread than the frame, so each
-/// descendant thread's `GUITHREADINFO` is consulted and the deepest focused
-/// descendant wins.
+/// descendant thread's `GUITHREADINFO` is consulted. The deepest candidate
+/// wins only within one ancestry chain; ambiguous branches, hidden/disabled
+/// controls and same-thread sibling windows are not usable focus targets.
 pub(super) fn focused_descendant(root: HWND) -> Option<HWND> {
 	unsafe extern "system" fn collect(child: HWND, state: LPARAM) -> BOOL {
 		// SAFETY: `state` is the exposed address of the thread list owned by
@@ -206,11 +251,27 @@ pub(super) fn focused_descendant(root: HWND) -> Option<HWND> {
 			continue;
 		}
 		let focused = info.hwndFocus;
-		// SAFETY: IsChild validates both handles.
-		if focused.is_null() || focused == root || unsafe { IsChild(root, focused) } == 0 {
+		// SAFETY: these predicates validate the handles; a sibling window on
+		// the same GUI thread is not a focused descendant of this target.
+		if focused.is_null()
+			|| (focused != root && unsafe { IsChild(root, focused) } == 0)
+			|| unsafe { IsWindowVisible(focused) } == 0
+			|| unsafe { IsWindowEnabled(focused) } == 0
+			|| (!info.hwndActive.is_null() && self::root(info.hwndActive) != root)
+		{
 			continue;
 		}
-		let depth = depth_below(root, focused);
+		let Some(depth) = depth_below(root, focused) else { continue };
+		if let Some((_, previous)) = best
+			&& previous != focused
+			// SAFETY: IsChild validates both handles. Independent child
+			// threads can retain stale focus in different branches; neither
+			// branch is an unambiguous keyboard target.
+			&& unsafe { IsChild(previous, focused) } == 0
+			&& unsafe { IsChild(focused, previous) } == 0
+		{
+			return None;
+		}
 		if best.is_none_or(|(best_depth, _)| depth > best_depth) {
 			best = Some((depth, focused));
 		}
@@ -219,7 +280,7 @@ pub(super) fn focused_descendant(root: HWND) -> Option<HWND> {
 }
 
 /// Number of parent links between `descendant` and `ancestor`.
-fn depth_below(ancestor: HWND, descendant: HWND) -> usize {
+fn depth_below(ancestor: HWND, descendant: HWND) -> Option<usize> {
 	let mut depth = 0;
 	let mut current = descendant;
 	while current != ancestor && depth < 64 {
@@ -230,31 +291,33 @@ fn depth_below(ancestor: HWND, descendant: HWND) -> usize {
 		}
 		depth += 1;
 	}
-	depth
+	(current == ancestor).then_some(depth)
 }
 
-/// Explains why User Interface Privilege Isolation discards this process's
-/// input to `hwnd`, or `None` when the target does not run at a higher
-/// integrity level. Posted and injected input to a higher-integrity window
-/// reports success but never arrives.
+/// Refuses higher-integrity targets and unreadable tokens. An OS enqueue
+/// result is not evidence that a higher-integrity application consumed input.
 pub(super) fn uipi_block(hwnd: HWND) -> Option<String> {
 	let mut pid = 0;
 	// SAFETY: `pid` is writable; Win32 validates the handle.
 	unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
 	if pid == 0 {
-		return None;
+		return Some("the target's owning process is no longer available".to_string());
 	}
 	// SAFETY: the pseudo-handle for the current process needs no cleanup.
-	let own = integrity_level(unsafe { GetCurrentProcess() })?;
+	let Some(own) = integrity_level(unsafe { GetCurrentProcess() }) else {
+		return Some("cannot establish this process's integrity level; no input was sent".to_string());
+	};
 	// SAFETY: scalar arguments; a null result is handled below.
 	let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
 	if process.is_null() {
-		return None;
+		return Some(format!("cannot inspect process {pid}'s integrity level; no input was sent"));
 	}
 	let target = integrity_level(process);
 	// SAFETY: `process` was opened above and is closed exactly once.
 	unsafe { CloseHandle(process) };
-	let target = target?;
+	let Some(target) = target else {
+		return Some(format!("cannot read process {pid}'s integrity token; no input was sent"));
+	};
 	(target > own).then(|| {
 		format!(
 			"process {pid} runs at {} integrity, above this process's {} integrity, so Windows UIPI \
@@ -366,75 +429,25 @@ fn executable_is_any(hwnd: HWND, names: &[&str]) -> bool {
 	})
 }
 
-/// Activates `target` while attached to the current foreground thread's input
-/// state, which lets `SetForegroundWindow` pass the foreground lock without
-/// `UIAccess`. Returns whether `target` is now the foreground window.
-fn attach_and_activate(target: HWND) -> bool {
-	// SAFETY: every call takes scalar handles or thread ids that Win32
-	// validates; the attachment is undone before returning.
+/// Requests activation without attaching to an untrusted input queue or
+/// injecting a dummy key into whichever application currently has focus.
+/// Foreground-lock refusal is handled by the caller before it sends input.
+pub(super) fn activate(target: HWND) -> bool {
+	// SAFETY: both functions take only OS-validated handles and scalar state.
 	unsafe {
-		let current = GetForegroundWindow();
-		if current == target {
-			return true;
-		}
-		let own_thread = GetCurrentThreadId();
-		let foreground_thread = GetWindowThreadProcessId(current, null_mut());
-		let attached = foreground_thread != 0
-			&& foreground_thread != own_thread
-			&& AttachThreadInput(own_thread, foreground_thread, 1) != 0;
 		SetForegroundWindow(target);
-		if attached {
-			AttachThreadInput(own_thread, foreground_thread, 0);
-		}
 		GetForegroundWindow() == target
 	}
 }
 
-/// Activates `target`, retrying after a reserved no-op key (`VK_NONAME`) makes
-/// this process the source of the most recent input, which the foreground
-/// lock requires. Returns whether `target` became the foreground window.
-pub(super) fn activate(target: HWND) -> bool {
-	if attach_and_activate(target) {
-		return true;
-	}
-	let input_token = [noname_key(0), noname_key(KEYEVENTF_KEYUP)];
-	// SAFETY: `input_token` is an initialized INPUT array copied synchronously.
-	unsafe {
-		SendInput(input_token.len() as u32, input_token.as_ptr(), size_of::<INPUT>() as i32);
-	}
-	for _ in 0..3 {
-		if attach_and_activate(target) {
-			return true;
-		}
-		thread::sleep(Duration::from_millis(25));
-	}
-	false
-}
-
-const fn noname_key(flags: u32) -> INPUT {
-	INPUT {
-		r#type:    INPUT_KEYBOARD,
-		Anonymous: INPUT_0 {
-			ki: KEYBDINPUT {
-				wVk:         VK_NONAME,
-				wScan:       0,
-				dwFlags:     flags,
-				time:        0,
-				dwExtraInfo: 0,
-			},
-		},
-	}
-}
-
-/// Waits up to `timeout` for `target`, or a window it owns such as a modal
-/// dialog that activation surfaced instead, to be the foreground window.
+/// Waits up to `timeout` for the exact target HWND. An owned modal dialog is
+/// not an equivalent input destination.
 pub(super) fn wait_for_foreground(target: HWND, timeout: Duration) -> bool {
 	let deadline = Instant::now() + timeout;
 	loop {
 		// SAFETY: GetForegroundWindow has no preconditions.
 		let foreground = unsafe { GetForegroundWindow() };
-		// SAFETY: GetAncestor validates the handle and returns null for stale ones.
-		if foreground == target || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == target {
+		if foreground == target {
 			return true;
 		}
 		if Instant::now() >= deadline {
@@ -444,116 +457,22 @@ pub(super) fn wait_for_foreground(target: HWND, timeout: Duration) -> bool {
 	}
 }
 
-/// Runs background `operation` against `root` so it cannot take the
-/// foreground: the window is non-activatable while the operation and its
-/// asynchronous handlers run, and if it activated anyway the user's previous
-/// foreground window is handed back.
-pub(super) fn contain_activation<T>(root: HWND, operation: impl FnOnce() -> T) -> T {
-	contain(root, false, operation)
-}
-
-/// [`contain_activation`] for a UI Automation pattern call, which also
-/// disables XAML and Chromium hosts for the synchronous call: they call
-/// `SetForegroundWindow(self)` from pattern handlers, a disabled top-level
-/// window cannot become foreground, and the pattern still arrives over the
-/// accessibility channel.
-pub(super) fn contain_pattern_activation<T>(root: HWND, operation: impl FnOnce() -> T) -> T {
-	contain(root, true, operation)
-}
-
-fn contain<T>(root: HWND, shield_host: bool, operation: impl FnOnce() -> T) -> T {
-	// SAFETY: GetForegroundWindow has no preconditions.
-	let previous = unsafe { GetForegroundWindow() };
-	// A target that already owns the foreground has nothing to take, and
-	// disabling it would drop the user's keyboard focus inside it.
-	if previous.is_null() || self::root(previous) == root {
-		return operation();
+/// Known self-activating providers cannot be made background-safe by changing
+/// WS_EX_NOACTIVATE (explicit SetForegroundWindow bypasses it), disabling
+/// foreign windows (synchronous, racy and potentially permanent on a hang), or
+/// restoring focus afterward (already disturbed the user and changed z-order).
+pub(super) fn ensure_pattern_safe(root: HWND) -> CoreResult<()> {
+	if !owns_foreground(root)
+		&& (is_xaml_host(root)
+			|| with_class_name(root, |class| is_chromium_class(class) || is_wpf_class(class))
+			|| has_chromium_descendant(root))
+	{
+		return Err(DesktopError::background_unavailable(format!(
+			"window {} ({}) can take foreground during UI Automation actions; no action was sent; \
+			 use coordinate input with takeover:true or explicitly focus the target first",
+			root.expose_provenance(),
+			class_name(root),
+		)));
 	}
-	let no_activate = NoActivateGuard::arm(root);
-	let result = {
-		let _shield = shield_host.then(|| DisabledHostGuard::arm(root));
-		operation()
-	};
-	thread::sleep(ACTIVATION_SETTLE);
-	// SAFETY: GetForegroundWindow has no preconditions.
-	let current = unsafe { GetForegroundWindow() };
-	if !current.is_null() && self::root(current) == root {
-		// Target handlers can re-activate asynchronously; the second attempt
-		// wins that race.
-		attach_and_activate(previous);
-		thread::sleep(Duration::from_millis(12));
-		attach_and_activate(previous);
-	}
-	drop(no_activate);
-	result
-}
-
-/// Sets `WS_EX_NOACTIVATE` on a top-level window and clears only that bit on
-/// drop. The window still receives posted input and UI Automation patterns,
-/// but click-activation and its own `SetForegroundWindow` calls are refused.
-struct NoActivateGuard {
-	root:    HWND,
-	applied: bool,
-}
-
-impl NoActivateGuard {
-	fn arm(root: HWND) -> Self {
-		// SAFETY: these calls read and write scalar window state; Win32
-		// validates the handle. Hung windows are skipped because the style
-		// change sends synchronous messages to the owning thread.
-		let applied = unsafe {
-			IsHungAppWindow(root) == 0 && {
-				let style = GetWindowLongW(root, GWL_EXSTYLE) as u32;
-				style & WS_EX_NOACTIVATE == 0 && {
-					SetWindowLongW(root, GWL_EXSTYLE, (style | WS_EX_NOACTIVATE) as i32);
-					// UIPI can refuse the change on higher-integrity windows.
-					GetWindowLongW(root, GWL_EXSTYLE) as u32 & WS_EX_NOACTIVATE != 0
-				}
-			}
-		};
-		Self { root, applied }
-	}
-}
-
-impl Drop for NoActivateGuard {
-	fn drop(&mut self) {
-		if self.applied {
-			// SAFETY: scalar window-state access; clearing only our bit keeps
-			// style changes the application made meanwhile.
-			unsafe {
-				let style = GetWindowLongW(self.root, GWL_EXSTYLE) as u32;
-				SetWindowLongW(self.root, GWL_EXSTYLE, (style & !WS_EX_NOACTIVATE) as i32);
-			}
-		}
-	}
-}
-
-/// Disables a XAML or Chromium host until dropped and leaves other hosts
-/// untouched.
-struct DisabledHostGuard {
-	root:     HWND,
-	disabled: bool,
-}
-
-impl DisabledHostGuard {
-	fn arm(root: HWND) -> Self {
-		// SAFETY: IsHungAppWindow and EnableWindow take a scalar handle that
-		// Win32 validates; EnableWindow returns nonzero when the window was
-		// already disabled, which is then left alone.
-		let disabled = unsafe {
-			IsHungAppWindow(root) == 0
-				&& (is_xaml_host(root) || with_class_name(root, is_chromium_class))
-				&& EnableWindow(root, 0) == 0
-		};
-		Self { root, disabled }
-	}
-}
-
-impl Drop for DisabledHostGuard {
-	fn drop(&mut self) {
-		if self.disabled {
-			// SAFETY: re-enables the window this guard disabled.
-			unsafe { EnableWindow(self.root, 1) };
-		}
-	}
+	Ok(())
 }

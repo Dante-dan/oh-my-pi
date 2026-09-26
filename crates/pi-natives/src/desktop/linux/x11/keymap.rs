@@ -215,15 +215,18 @@ pub(super) fn run_steps(
 ) -> CoreResult<()> {
 	let mut held: Vec<u8> = Vec::new();
 	for &step in steps {
+		// An emitter can fail after the press was queued (e.g. SYN_REPORT
+		// failed after EV_KEY). Include the attempted press in cleanup.
+		if step.press && !held.contains(&step.keycode) {
+			held.push(step.keycode);
+		}
 		if let Err(error) = emit(step) {
 			for &keycode in held.iter().rev() {
 				let _ = emit(KeyStep { keycode, press: false });
 			}
 			return Err(error);
 		}
-		if step.press {
-			held.push(step.keycode);
-		} else {
+		if !step.press {
 			held.retain(|&keycode| keycode != step.keycode);
 		}
 	}
@@ -366,6 +369,21 @@ mod tests {
 		let index = usize::from(ONE - 8) * 2;
 		map.keysyms[index + 1] = 0x61;
 		assert_eq!(map.lookup(0x61), Some((A, false)));
+	}
+
+	#[test]
+	fn partially_failed_press_is_released_before_earlier_modifiers() {
+		let mut emitted = Vec::new();
+		let result = run_steps(&[press(CTRL), press(A)], |step| {
+			emitted.push(step);
+			if step == press(A) {
+				Err(DesktopError::input_failed("failed after enqueue"))
+			} else {
+				Ok(())
+			}
+		});
+		assert!(result.is_err());
+		assert_eq!(emitted, vec![press(CTRL), press(A), release(A), release(CTRL)]);
 	}
 
 	#[test]

@@ -63,7 +63,7 @@ impl Backend for MacosBackend {
 			input: input_permission,
 			ax: input_permission,
 			background_window_input: input_permission && skylight::is_available(),
-			takeover: true,
+			takeover: skylight::takeover_available(),
 			capture_permission: permission_label(capture_permission),
 			input_permission: permission_label(input_permission),
 			ax_permission: permission_label(input_permission),

@@ -1,7 +1,6 @@
 //! Window-manager and window-tree queries shared by the X11 input routes:
-//! EWMH activation with a real server timestamp, focus snapshots that undo a
-//! background action's focus side effects, occlusion checks for real pointer
-//! input, and popup keyboard-grab detection.
+//! EWMH activation with a real server timestamp, background focus observation,
+//! occlusion checks for real pointer input, and popup detection.
 
 use std::{
 	thread,
@@ -29,14 +28,6 @@ const TREE_WALK_LIMIT: usize = 32;
 /// processes click-to-focus asynchronously).
 const FOCUS_SETTLE_WATCH: Duration = Duration::from_millis(150);
 const FOCUS_POLL: Duration = Duration::from_millis(25);
-/// Bound on re-activating the user's window after a focus change.
-const FOCUS_RESTORE_BUDGET: Duration = Duration::from_millis(800);
-/// How long a plain re-activation may take before the core focus is bounced.
-const FOCUS_BOUNCE_AFTER: Duration = Duration::from_millis(150);
-/// Lets the WM observe the bounced focus before the re-activation.
-const FOCUS_BOUNCE_SETTLE: Duration = Duration::from_millis(60);
-/// Consecutive polls the restored window must stay active.
-const FOCUS_STABLE_POLLS: u32 = 3;
 
 pub(super) struct Atoms {
 	pub net_active_window:   Atom,
@@ -357,9 +348,16 @@ impl Wm<'_> {
 	}
 
 	/// Refuses a real (position-routed) pointer event at screen point `(x, y)`
-	/// unless it would land on `window`, a window of the same process, or an
-	/// unowned popup (a menu the press is meant to reach).
+	/// unless it would land on `window`. Another window of the same process
+	/// and an unowned override-redirect popup are not the requested target.
 	pub(super) fn check_pointer_target(&self, window: Window, x: i16, y: i16) -> CoreResult<()> {
+		let attributes = self.conn.get_window_attributes(window)
+			.map_err(wm_failed)?.reply().map_err(wm_failed)?;
+		if attributes.map_state != MapState::VIEWABLE {
+			return Err(DesktopError::background_unavailable(format!(
+				"window {window} is not viewable; use ax actions or takeover:true"
+			)));
+		}
 		let geometry = self
 			.conn
 			.get_geometry(window)
@@ -385,9 +383,11 @@ impl Wm<'_> {
 				geometry.width, geometry.height
 			)));
 		}
-		let Some(under) = self.root_child_at(x, y) else {
-			return Ok(());
-		};
+		let under = self.root_child_at(x, y).ok_or_else(|| {
+			DesktopError::background_unavailable(format!(
+				"no input window covers ({x}, {y}); use ax actions or takeover:true"
+			))
+		})?;
 		let frame = self.root_child_of(window).ok_or_else(|| {
 			DesktopError::background_unavailable(format!(
 				"window {window} is not mapped on this screen; retry with takeover:true or use ax \
@@ -398,18 +398,6 @@ impl Wm<'_> {
 			return Ok(());
 		}
 		let covering_pid = self.root_child_pid(under);
-		if covering_pid.is_some() && covering_pid == self.owning_pid(window) {
-			return Ok(());
-		}
-		let override_redirect = self
-			.conn
-			.get_window_attributes(under)
-			.ok()
-			.and_then(|cookie| cookie.reply().ok())
-			.is_some_and(|attributes| attributes.override_redirect);
-		if override_redirect && covering_pid.is_none() {
-			return Ok(());
-		}
 		let client = self.client_of(under).unwrap_or(under);
 		let title = self.title(client);
 		Err(DesktopError::background_unavailable(format!(
@@ -425,10 +413,8 @@ impl Wm<'_> {
 		)))
 	}
 
-	/// The topmost mapped override-redirect popup owned by `pid` that holds a
-	/// grab (menus, combo lists; not tooltips or notifications). While one is
-	/// up, the toolkit's active keyboard grab makes the server drop key events
-	/// from every other master keyboard aimed at that client.
+	/// A mapped popup is evidence that input may be grabbed, not proof of
+	/// who owns the grab. Never use this heuristic to authorize core input.
 	pub(super) fn grab_popup_of(&self, pid: u32) -> Option<Window> {
 		self.children(self.root).into_iter().rev().find(|&child| {
 			let Some(attributes) = self
@@ -457,26 +443,18 @@ impl Wm<'_> {
 			.and_then(|reply| reply.value32())
 			.is_some_and(|mut atoms| atoms.any(|atom| self.atoms.passive_popup_types.contains(&atom)))
 	}
-
-	/// `_NET_WM_PID` of the window holding the core keyboard focus.
-	pub(super) fn focus_owner_pid(&self) -> Option<u32> {
-		let (focus, _) = self.input_focus()?;
-		(focus > 1).then(|| self.owning_pid(focus)).flatten()
-	}
 }
 
 /// The user's focus state before a background action.
 pub(super) struct FocusSnapshot {
 	active: Option<Window>,
 	focus:  Window,
-	revert: InputFocus,
-	ewmh:   bool,
 }
 
 impl FocusSnapshot {
 	pub(super) fn capture(wm: Wm<'_>) -> Self {
-		let (focus, revert) = wm.input_focus().unwrap_or((NONE, InputFocus::POINTER_ROOT));
-		Self { active: wm.active_window(), focus, revert, ewmh: wm.tracks_active_window() }
+		let focus = wm.input_focus().map_or(NONE, |(focus, _)| focus);
+		Self { active: wm.active_window(), focus }
 	}
 
 	fn changed(&self, wm: Wm<'_>) -> bool {
@@ -484,90 +462,31 @@ impl FocusSnapshot {
 			|| wm.input_focus().map(|(focus, _)| focus) != Some(self.focus)
 	}
 
-	/// Watches briefly for a focus change the action caused (a WM that
-	/// click-focuses every master device, a toolkit presenting its window) and
-	/// re-activates the user's window. A change inside the target process that
-	/// already owned the focus is the app's own behaviour (a dialog it opened
-	/// for the user) and is left alone.
-	pub(super) fn restore(&self, wm: Wm<'_>, target_pid: Option<u32>) {
+	/// Observe only. Re-activation can raise windows, and the old "focus
+	/// bounce" deliberately sent the user's keystrokes to the target for
+	/// 60ms. Neither belongs in a background operation. An unrelated focus
+	/// change is the user's, not permission to undo it.
+	pub(super) fn check(&self, wm: Wm<'_>, target: Window) -> CoreResult<()> {
 		let watch_until = Instant::now() + FOCUS_SETTLE_WATCH;
-		while !self.changed(wm) {
+		loop {
+			if self.changed(wm) {
+				let moved_to_target = (self.active != Some(target) && wm.active_window() == Some(target))
+					|| (!wm.is_within(self.focus, target)
+						&& wm.input_focus().is_some_and(|(focus, _)| wm.is_within(focus, target)));
+				return if moved_to_target {
+					Err(DesktopError::input_failed(format!(
+						"window {target} changed the desktop focus during background input; the action \
+						 may already have landed, so do not retry blindly; use ax actions or \
+						 takeover:true for subsequent input"
+					)))
+				} else {
+					Ok(())
+				};
+			}
 			if Instant::now() >= watch_until {
-				return;
+				return Ok(());
 			}
 			thread::sleep(FOCUS_POLL);
-		}
-		if target_pid.is_some()
-			&& self
-				.active
-				.and_then(|active| wm.owning_pid(active))
-				.or_else(|| {
-					(self.focus > 1)
-						.then(|| wm.owning_pid(self.focus))
-						.flatten()
-				}) == target_pid
-		{
-			return;
-		}
-		if self.ewmh
-			&& let Some(previous) = self.active
-		{
-			let start = Instant::now();
-			let mut stable = 0;
-			let mut sent = false;
-			let mut bounced = false;
-			while start.elapsed() < FOCUS_RESTORE_BUDGET {
-				let now = wm.active_window();
-				if now == Some(previous) {
-					stable += 1;
-					if stable >= FOCUS_STABLE_POLLS {
-						break;
-					}
-				} else {
-					stable = 0;
-					if !sent {
-						sent = true;
-						let _ = wm.request_activation(previous, now);
-					} else if !bounced
-						&& start.elapsed() >= FOCUS_BOUNCE_AFTER
-						&& let Some(believed) = now
-						&& wm
-							.input_focus()
-							.is_some_and(|(focus, _)| wm.is_within(focus, previous))
-					{
-						// A core-protocol WM that saw the virtual keyboard's focus
-						// believes the target is active while the core focus never
-						// left the user's window, so its SetInputFocus for our
-						// request is a no-op and its bookkeeping never updates.
-						// Bouncing the core focus through the window it believes
-						// active makes the re-activation a real focus transition.
-						bounced = true;
-						if let Ok(cookie) =
-							wm.conn
-								.set_input_focus(InputFocus::PARENT, believed, x11rb::CURRENT_TIME)
-						{
-							let _ = cookie.check();
-						}
-						thread::sleep(FOCUS_BOUNCE_SETTLE);
-						let _ = wm.request_activation(previous, Some(believed));
-					}
-				}
-				thread::sleep(FOCUS_POLL * 2);
-			}
-			if wm
-				.input_focus()
-				.is_some_and(|(focus, _)| wm.is_within(focus, previous))
-			{
-				return;
-			}
-		}
-		if self.focus > 1
-			&& wm.input_focus().map(|(focus, _)| focus) != Some(self.focus)
-			&& let Ok(cookie) = wm
-				.conn
-				.set_input_focus(self.revert, self.focus, x11rb::CURRENT_TIME)
-		{
-			let _ = cookie.check();
 		}
 	}
 }

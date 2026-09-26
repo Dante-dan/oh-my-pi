@@ -6,8 +6,8 @@
 //! master pointer/keyboard pair: its pointer is warped independently of the
 //! user's (`XIWarpPointer`) and its keyboard carries its own focus
 //! (`XISetFocus`). Events from uinput slaves attached to it are real,
-//! non-synthetic XI2 and core events, while the user's pointer and core focus
-//! stay untouched.
+//! non-synthetic XI2 events. Core events are disabled: core-protocol WMs
+//! otherwise mistake virtual-device focus for a user activation.
 //!
 //! The pair lives for the whole desktop session: adding and removing masters
 //! churns the `XInput` hierarchy, which crashes mutter 42 and `LibreOffice` VCL
@@ -42,6 +42,7 @@ use super::{
 	input::button_detail,
 	keymap::{self, KeyStep, Keymap},
 	uinput::{UInputDevice, X_KEYCODE_OFFSET},
+	wm::{Atoms, Wm},
 };
 use crate::desktop::{
 	backend::{Modifiers, MouseButton},
@@ -83,6 +84,7 @@ static NONCE: AtomicU16 = AtomicU16::new(1);
 pub(super) struct Mpx {
 	conn:            RustConnection,
 	root:            Window,
+	atoms:           Atoms,
 	/// Bottom-right screen corner: the virtual cursor rests there between
 	/// actions, where its sprite is all but off-screen.
 	park:            (i16, i16),
@@ -92,6 +94,9 @@ pub(super) struct Mpx {
 	pointer:         UInputDevice,
 	pointer_slave:   u16,
 	keyboard:        Option<VirtualKeyboard>,
+	/// A timeout can leave kernel events in flight. Never retarget that pair
+	/// to another window after an uncertain dispatch.
+	uncertain:       bool,
 }
 
 /// The uinput keyboard slave, created on the first keyboard or modifier use
@@ -99,7 +104,6 @@ pub(super) struct Mpx {
 struct VirtualKeyboard {
 	device: UInputDevice,
 	slave:  u16,
-	keymap: Keymap,
 }
 
 /// A raw XI2 event the server reports once it has processed a slave event.
@@ -134,6 +138,7 @@ impl Mpx {
 				version.major_version, version.minor_version
 			)));
 		}
+		let atoms = Atoms::intern(&conn)?;
 		let owner = Owner::current();
 		if let Some(owner) = &owner {
 			reap_orphans(&conn, owner);
@@ -172,6 +177,7 @@ impl Mpx {
 		let mpx = Self {
 			conn,
 			root,
+			atoms,
 			park,
 			name,
 			master_pointer,
@@ -179,6 +185,7 @@ impl Mpx {
 			pointer,
 			pointer_slave,
 			keyboard: None,
+			uncertain: false,
 		};
 		mpx.park();
 		Ok(mpx)
@@ -199,6 +206,7 @@ impl Mpx {
 			this.drain();
 			let mut confirmed = true;
 			for index in 0..count {
+				this.check_target(target, x, y)?;
 				this.pointer.button(detail, true)?;
 				confirmed &= this.wait_raw(this.pointer_slave, Raw::ButtonPress(detail), 1);
 				thread::sleep(PRESS_HOLD);
@@ -230,6 +238,7 @@ impl Mpx {
 		self.gesture(target, modifiers, Some(detail), true, |this| {
 			this.warp(start.0, start.1)?;
 			this.drain();
+			this.check_target(target, start.0, start.1)?;
 			this.pointer.button(detail, true)?;
 			let mut confirmed = this.wait_raw(this.pointer_slave, Raw::ButtonPress(detail), 1);
 			thread::sleep(DRAG_ARM);
@@ -266,10 +275,12 @@ impl Mpx {
 				return Ok(true);
 			};
 			for &(horizontal, value) in earlier {
+				this.check_target(target, x, y)?;
 				this.pointer.wheel(horizontal, value)?;
 				thread::sleep(SCROLL_DETENT_DELAY);
 			}
 			this.drain();
+			this.check_target(target, x, y)?;
 			this.pointer.wheel(horizontal, value)?;
 			Ok(this.wait_raw(this.pointer_slave, Raw::Wheel, 1))
 		})
@@ -282,6 +293,7 @@ impl Mpx {
 	pub(super) fn hover(&mut self, target: Window, (x, y): (i16, i16)) -> CoreResult<()> {
 		let step: i16 = if x > 0 { 1 } else { -1 };
 		self.gesture(target, Modifiers::default(), None, false, |this| {
+			this.check_target(target, x - step, y)?;
 			this.warp(x - step, y)?;
 			this.drain();
 			this.pointer.motion(i32::from(step), 0)?;
@@ -292,18 +304,23 @@ impl Mpx {
 	}
 
 	pub(super) fn type_text(&mut self, target: Window, text: &str) -> CoreResult<()> {
-		let steps = self.ensure_keyboard()?.keymap.plan_text(text)?;
+		self.check_ready()?;
+		let steps = self.keyboard_keymap()?.plan_text(text)?;
 		self.deliver_keys(target, &steps)
 	}
 
 	pub(super) fn key_chord(&mut self, target: Window, keys: &[KeyName]) -> CoreResult<()> {
-		let steps = self.ensure_keyboard()?.keymap.plan_chord(keys)?;
+		self.check_ready()?;
+		let steps = self.keyboard_keymap()?.plan_chord(keys)?;
 		self.deliver_keys(target, &steps)
 	}
 
 	fn deliver_keys(&mut self, target: Window, steps: &[KeyStep]) -> CoreResult<()> {
 		self.focus(target)?;
-		self.emit_keys(steps)?;
+		if let Err(error) = self.emit_keys(steps) {
+			self.uncertain = true;
+			return Err(error);
+		}
 		thread::sleep(KEY_SETTLE);
 		Ok(())
 	}
@@ -322,28 +339,34 @@ impl Mpx {
 		park_after: bool,
 		body: impl FnOnce(&mut Self) -> CoreResult<bool>,
 	) -> CoreResult<()> {
+		self.check_ready()?;
 		self.thaw();
 		let held = self.hold_modifiers(target, modifiers)?;
 		let result = body(self);
-		if let Some(button) = button {
-			// The kernel drops a release for a button that is not held.
-			let _ = self.pointer.button(button, false);
+		let released_button = button.map_or(Ok(()), |button| self.pointer.button(button, false));
+		let released_keys = self.release_keys(&held);
+		let result = result.and_then(|confirmed| released_button.map(|()| confirmed && released_keys));
+		self.uncertain = !matches!(result, Ok(true));
+		match result {
+			Ok(true) => {
+				if park_after {
+					self.park();
+				}
+				Ok(())
+			},
+			Ok(false) => Err(DesktopError::input_failed(
+				"the X server did not confirm virtual input or key release; delivery is uncertain, \
+				 so do not retry blindly; use ax actions or takeover:true for subsequent input",
+			)),
+			Err(error) => Err(error),
 		}
-		let released = self.release_keys(&held);
-		if park_after && released && matches!(result, Ok(true)) {
-			self.park();
-		}
-		result.map(|_confirmed| ())
 	}
 
 	fn hold_modifiers(&mut self, target: Window, modifiers: Modifiers) -> CoreResult<Vec<u8>> {
 		if !(modifiers.ctrl || modifiers.alt || modifiers.shift || modifiers.meta) {
 			return Ok(Vec::new());
 		}
-		let keycodes = self
-			.ensure_keyboard()?
-			.keymap
-			.modifier_keycodes(modifiers)?;
+		let keycodes = self.keyboard_keymap()?.modifier_keycodes(modifiers)?;
 		self.focus(target)?;
 		let presses: Vec<KeyStep> = keycodes
 			.iter()
@@ -352,6 +375,7 @@ impl Mpx {
 		// Modifiers and buttons travel through separate uinput devices, so the
 		// press is only sent once the server has the modifiers down.
 		if let Err(error) = self.emit_keys(&presses) {
+			self.uncertain = true;
 			self.release_keys(&keycodes);
 			return Err(error);
 		}
@@ -433,6 +457,31 @@ impl Mpx {
 		)))
 	}
 
+	pub(super) fn inhibit(&mut self) {
+		self.uncertain = true;
+	}
+
+	fn check_ready(&self) -> CoreResult<()> {
+		if self.uncertain {
+			return Err(DesktopError::background_unavailable(
+				"the virtual input device could not confirm isolated delivery of a prior action \
+				 and cannot be retargeted; use ax actions or takeover:true",
+			));
+		}
+		Ok(())
+	}
+
+	fn check_target(&self, target: Window, x: i16, y: i16) -> CoreResult<()> {
+		Wm { conn: &self.conn, root: self.root, atoms: &self.atoms }
+			.check_pointer_target(target, x, y)
+	}
+
+	fn keyboard_keymap(&mut self) -> CoreResult<Keymap> {
+		let slave = self.ensure_keyboard()?.slave;
+		// The desktop can reconfigure a hot-plugged device between actions.
+		Keymap::device(&self.conn, slave)
+	}
+
 	fn ensure_keyboard(&mut self) -> CoreResult<&mut VirtualKeyboard> {
 		let keyboard = match self.keyboard.take() {
 			Some(keyboard) => keyboard,
@@ -452,17 +501,21 @@ impl Mpx {
 			slave,
 			XIEventMask::RAW_KEY_PRESS | XIEventMask::RAW_KEY_RELEASE,
 		)?;
-		let keymap = Keymap::device(&self.conn, slave)?;
 		// The first events of a fresh keyboard were observed to vanish while
 		// the master switches to the slave's keymap; push a symbol-less key
 		// through the whole pipeline before real text.
 		self.drain();
-		let _ = device.key(WARM_UP_KEYCODE, true);
+		if let Err(error) = device.key(WARM_UP_KEYCODE, true) {
+			let _ = device.key(WARM_UP_KEYCODE, false);
+			return Err(error);
+		}
 		thread::sleep(KEY_DELAY);
-		let _ = device.key(WARM_UP_KEYCODE, false);
-		let _ = self.wait_raw(slave, Raw::KeyRelease(WARM_UP_KEYCODE), 1);
+		device.key(WARM_UP_KEYCODE, false)?;
+		if !self.wait_raw(slave, Raw::KeyRelease(WARM_UP_KEYCODE), 1) {
+			return Err(DesktopError::input_failed("virtual keyboard warm-up was not confirmed"));
+		}
 		thread::sleep(WARM_UP_SETTLE);
-		Ok(VirtualKeyboard { device, slave, keymap })
+		Ok(VirtualKeyboard { device, slave })
 	}
 
 	/// Moves only the virtual master; synced so a following uinput event
@@ -519,6 +572,9 @@ impl Mpx {
 		let deadline = Instant::now() + timeout;
 		let mut seen = 0;
 		while seen < count {
+			if Instant::now() >= deadline {
+				return false;
+			}
 			match self.conn.poll_for_event() {
 				Ok(Some(event)) => {
 					if raw_matches(&event, device, kind) {
@@ -627,9 +683,10 @@ fn add_master(conn: &RustConnection, name: &str) -> CoreResult<()> {
 	let change = HierarchyChange {
 		len:  hierarchy_len(4 + name.len()),
 		data: HierarchyChangeData::AddMaster(HierarchyChangeDataAddMaster {
-			// Core events stay on so core-only clients (xterm, Tk, Motif) see
-			// the virtual devices too.
-			send_core: true,
+			// Core events make core-protocol WMs activate and raise the target.
+			// Legacy clients must use semantic actions, synthetic delivery where
+			// supported, or explicit takeover instead.
+			send_core: false,
 			enable:    true,
 			name:      name.as_bytes().to_vec(),
 		}),
@@ -705,32 +762,22 @@ fn attach(conn: &RustConnection, slave: u16, master: u16) -> CoreResult<()> {
 		.map_err(mpx_failed)
 }
 
-/// Removes a master pair, handing any remaining slaves back to the core
-/// devices (or floating them when those cannot be found).
+/// Removes a master pair without ever attaching a pending virtual slave to
+/// the user's core devices. Kernel hot-unplug is asynchronous.
 fn remove_master(conn: &RustConnection, master_pointer: u16) {
-	let core = query_devices(conn).ok().and_then(|devices| {
-		let find = |name: &[u8], type_: DeviceType| {
-			devices
-				.iter()
-				.find(|info| info.type_ == type_ && info.name == name)
-				.map(|info| info.deviceid)
-		};
-		Some((
-			find(b"Virtual core pointer", DeviceType::MASTER_POINTER)?,
-			find(b"Virtual core keyboard", DeviceType::MASTER_KEYBOARD)?,
-		))
-	});
-	let (return_mode, return_pointer, return_keyboard) = match core {
-		Some((pointer, keyboard)) => (ChangeMode::ATTACH, pointer, keyboard),
-		None => (ChangeMode::FLOAT, 0, 0),
-	};
+	if let Ok(devices) = query_devices(conn)
+		&& let Some(pointer) = devices.iter().find(|device| device.deviceid == master_pointer)
+		&& let Ok(cookie) = conn.xinput_xi_set_focus(NONE, CURRENT_TIME, pointer.attachment)
+	{
+		let _ = cookie.check();
+	}
 	let change = HierarchyChange {
 		len:  3,
 		data: HierarchyChangeData::RemoveMaster(HierarchyChangeDataRemoveMaster {
 			deviceid: master_pointer,
-			return_mode,
-			return_pointer,
-			return_keyboard,
+			return_mode: ChangeMode::FLOAT,
+			return_pointer: 0,
+			return_keyboard: 0,
 		}),
 	};
 	if let Ok(cookie) = conn.xinput_xi_change_hierarchy(&[change]) {

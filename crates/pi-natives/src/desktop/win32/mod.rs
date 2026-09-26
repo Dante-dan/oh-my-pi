@@ -3,6 +3,8 @@ mod ax;
 #[cfg(target_os = "windows")]
 mod capture;
 pub mod delivery;
+#[cfg(any(target_os = "windows", test))]
+mod geometry;
 #[cfg(target_os = "windows")]
 mod input;
 #[cfg(target_os = "windows")]

@@ -110,6 +110,9 @@ pub trait Backend: Send {
 
 pub trait AxBackend {
 	fn window_root(&mut self, win: &DesktopWindow) -> CoreResult<AxHandle>;
+	/// Resolves an element's owning top-level window for coordinate input.
+	/// Refuses missing or ambiguous ownership instead of hit-testing unrelated windows.
+	fn window_id(&mut self, h: &AxHandle, windows: &[DesktopWindow]) -> CoreResult<String>;
 	fn props(&mut self, h: &AxHandle) -> CoreResult<AxProps>;
 	fn children(&mut self, h: &AxHandle) -> CoreResult<Vec<AxHandle>>;
 	fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>>;

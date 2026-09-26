@@ -48,6 +48,7 @@ pub fn is_chromium_class(class: &str) -> bool {
 		.strip_prefix("Chrome_WidgetWin_")
 		.is_some_and(|suffix| !suffix.is_empty())
 		|| class.starts_with("CefBrowser")
+		|| class == "Chrome_RenderWidgetHostHWND"
 }
 
 pub fn is_winui3_class(class: &str) -> bool {
@@ -213,6 +214,7 @@ mod tests {
 	fn recognizes_real_classes_and_rejects_lookalikes() {
 		assert!(is_chromium_class("Chrome_WidgetWin_1"));
 		assert!(is_chromium_class("CefBrowserWindow"));
+		assert!(is_chromium_class("Chrome_RenderWidgetHostHWND"));
 		assert!(!is_chromium_class("Chrome_WidgetWin_"));
 		assert!(!is_chromium_class("ChromeWidgetWin_1"));
 
@@ -266,6 +268,7 @@ mod tests {
 	fn covers_the_full_known_silent_drop_matrix() {
 		assert_matrix(background("Chrome_WidgetWin_1"), [true; 6]);
 		assert_matrix(background("CefBrowserWindow"), [true; 6]);
+		assert_matrix(background("Chrome_RenderWidgetHostHWND"), [true; 6]);
 		assert_matrix(background("WinUIDesktopWin32WindowClass"), [
 			true, true, true, false, false, false,
 		]);

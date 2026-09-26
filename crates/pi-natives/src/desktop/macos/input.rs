@@ -63,7 +63,9 @@ impl MacInput {
 				match mode {
 					DeliveryMode::Background => {
 						background_guard(&window, pid, &event)?;
-						background_pointer(&self.source, pid, wid, &window, event)
+						skylight::with_background_guard(pid, || {
+							background_pointer(&self.source, pid, wid, &window, event)
+						})
 					},
 					DeliveryMode::Foreground => {
 						foreground_pointer(&self.source, &window, pid, wid, event)
@@ -94,9 +96,14 @@ impl MacInput {
 						if process::is_screen_sharing(pid) {
 							return Err(screen_sharing_refusal(&window, "synthesized text"));
 						}
-						ensure_sole_keyboard_destination(&window, pid, wid, capture)?;
-						skylight::with_focus_without_raise(pid, wid, || {
-							background_type(&self.source, pid, text)
+						if !process::is_terminal(pid) && ax::insert_native_text(pid, wid, text)? {
+							return Ok(());
+						}
+						ensure_sole_keyboard_destination(pid, wid)?;
+						skylight::with_background_guard(pid, || {
+							skylight::with_focus_without_raise(pid, wid, || {
+								background_type(&self.source, pid, text)
+							})
 						})
 					},
 					DeliveryMode::Foreground => {
@@ -110,8 +117,13 @@ impl MacInput {
 						skylight::with_foreground(pid, wid, |activated| {
 							thread::sleep(first_key_settle(activated));
 							match &physical {
-								Some(transitions) => post_bare_keys(transitions),
-								None => global_type(&self.source, text),
+								Some(transitions) => {
+									skylight::require_front_window(pid, wid)?;
+									post_bare_keys(transitions)
+								},
+								None => type_text(&self.source, text, |event| {
+									post_takeover_key(pid, wid, event)
+								}),
 							}
 						})
 					},
@@ -144,13 +156,18 @@ impl MacInput {
 								"modifier flags on routed chords",
 							));
 						}
-						ensure_sole_keyboard_destination(&window, pid, wid, capture)?;
-						skylight::with_focus_without_raise(pid, wid, || {
-							background_chord(&self.source, pid, keys)
+						ensure_sole_keyboard_destination(pid, wid)?;
+						skylight::with_background_guard(pid, || {
+							skylight::with_focus_without_raise(pid, wid, || {
+								background_chord(&self.source, pid, keys)
+							})
 						})
 					},
 					DeliveryMode::Foreground => {
-						skylight::with_foreground(pid, wid, |_| global_chord(&self.source, keys))
+						skylight::with_foreground(pid, wid, |activated| {
+							thread::sleep(first_key_settle(activated));
+							key_chord(&self.source, keys, |event| post_takeover_key(pid, wid, event))
+						})
 					},
 				}
 			},
@@ -200,23 +217,9 @@ enum KeyboardConflict {
 /// `WindowServer`'s list, which also holds the per-window compositor surfaces
 /// of Chromium, Electron, and `WebKit` apps. `DesktopWindow::focused` cannot
 /// disambiguate: it marks every window of the active application.
-fn ensure_sole_keyboard_destination(
-	window: &DesktopWindow,
-	pid: libc::pid_t,
-	wid: u32,
-	capture: &MacCapture,
-) -> CoreResult<()> {
-	let conflict = if let Some(records) = ax::window_records(pid) {
-		keyboard_conflict(wid, &records)
-	} else {
-		// Without the window-id SPI nothing narrows WindowServer's list.
-		let siblings = capture
-			.windows()?
-			.into_iter()
-			.filter(|candidate| candidate.pid == window.pid && candidate.id != window.id)
-			.count();
-		(siblings > 0).then_some(KeyboardConflict::Siblings(siblings))
-	};
+fn ensure_sole_keyboard_destination(pid: libc::pid_t, wid: u32) -> CoreResult<()> {
+	let conflict = ax::window_records(pid)
+		.map_or(Some(KeyboardConflict::Unmapped), |records| keyboard_conflict(wid, &records));
 	match conflict {
 		None => Ok(()),
 		Some(KeyboardConflict::Unmapped) => Err(DesktopError::background_unavailable(format!(
@@ -284,10 +287,9 @@ fn background_guard(
 		_ => {},
 	}
 	let app = window.app.to_ascii_lowercase();
-	let chromium = ["chrome", "chromium", "electron", "brave", "edge", "arc"]
-		.iter()
-		.any(|name| app.contains(name));
-	if chromium && matches!(event, PointerEvent::Click { button: MouseButton::Right, .. }) {
+	if process::is_chromium(pid)
+		&& matches!(event, PointerEvent::Click { button: MouseButton::Right, .. })
+	{
 		return refuse("coerces synthetic background right-click events to left-clicks");
 	}
 	let canvas_or_game = ["blender", "unity", "godot", "unreal"]
@@ -660,17 +662,27 @@ fn global_type(source: &CGEventSource, text: &str) -> CoreResult<()> {
 	type_text(source, text, post_global)
 }
 
+fn post_takeover_key(pid: libc::pid_t, wid: u32, event: &CGEvent) -> CoreResult<()> {
+	if matches!(event.get_type(), CGEventType::KeyDown) {
+		// Stop rather than typing into a newly user-selected app/window. Key
+		// releases must still pass through so held modifiers do not leak.
+		skylight::require_front_window(pid, wid)?;
+	}
+	post_global(event)
+}
+
 fn type_text(
 	source: &CGEventSource,
 	text: &str,
 	mut post: impl FnMut(&CGEvent) -> CoreResult<()>,
 ) -> CoreResult<()> {
 	for character in text.chars() {
-		let value = character.to_string();
+		let mut buffer = [0; 4];
+		let value = character.encode_utf8(&mut buffer);
 		for down in [true, false] {
 			let event = CGEvent::new_keyboard_event(source.clone(), 0, down)
 				.map_err(|()| DesktopError::input_failed("failed to create a Quartz keyboard event"))?;
-			event.set_string(&value);
+			event.set_string(value);
 			event.set_flags(CGEventFlags::CGEventFlagNull);
 			post(&event)?;
 			thread::sleep(KEY_GAP);
@@ -789,22 +801,25 @@ fn key_chord(
 		return Err(DesktopError::invalid_key("key chord must not be empty"));
 	}
 	let mut active = Modifiers::default();
+	let mut pressed = 0;
+	let mut result = Ok(());
 	for &key in keys {
 		update_modifier(&mut active, key, true);
-		post_key(source, key, true, modifier_flags(active), &mut post)?;
-		thread::sleep(KEY_GAP);
-	}
-	let mut first_error = None;
-	for &key in keys.iter().rev() {
-		update_modifier(&mut active, key, false);
-		if let Err(error) = post_key(source, key, false, modifier_flags(active), &mut post)
-			&& first_error.is_none()
-		{
-			first_error = Some(error);
+		pressed += 1;
+		if let Err(error) = post_key(source, key, true, modifier_flags(active), &mut post) {
+			result = Err(error);
+			break;
 		}
 		thread::sleep(KEY_GAP);
 	}
-	first_error.map_or(Ok(()), Err)
+	let mut cleanup = Ok(());
+	for &key in keys[..pressed].iter().rev() {
+		update_modifier(&mut active, key, false);
+		let release = post_key(source, key, false, modifier_flags(active), &mut post);
+		cleanup = skylight::after_cleanup(cleanup, release);
+		thread::sleep(KEY_GAP);
+	}
+	skylight::after_cleanup(result, cleanup)
 }
 
 fn post_key(
@@ -948,8 +963,8 @@ fn char_key_code(character: char) -> CoreResult<u16> {
 }
 
 /// Delivers real HID pointer input to `window` while it is the frontmost key
-/// window, then restores focus, the stacking the input needed changed, and the
-/// user's pointer.
+/// window, then restores focus, any known covering window, and the user's
+/// pointer. Raising a single covering window is not an exact z-order snapshot.
 fn foreground_pointer(
 	source: &CGEventSource,
 	window: &DesktopWindow,
@@ -957,18 +972,24 @@ fn foreground_pointer(
 	wid: u32,
 	event: PointerEvent,
 ) -> CoreResult<()> {
-	let mut occluder = None;
-	let result = preserving_cursor(source, || {
+	preserving_cursor(source, || {
 		skylight::with_foreground(pid, wid, |_| {
-			occluder = uncover(window, pid, wid, &event)?;
-			global_pointer(source, event)
+			let mut occluder = None;
+			let result = uncover(window, pid, wid, &event, &mut occluder)
+				.and_then(|()| skylight::require_front_window(pid, wid))
+				.and_then(|()| global_pointer(source, event));
+			// Capture before raising, so even a failed raise/re-hit-test retains
+			// the restoration token. Never reorder over a user-selected app.
+			let cleanup = if skylight::is_front_window(pid, wid) {
+				occluder.map_or(Ok(()), |occluder: Occluder| {
+					ax::raise_window_id(occluder.pid, occluder.window)
+				})
+			} else {
+				Ok(())
+			};
+			skylight::after_cleanup(result, cleanup)
 		})
-	});
-	// Put back on top whatever the target had to be raised over.
-	if let Some(occluder) = occluder {
-		ax::raise_window_id(occluder.pid, occluder.window);
-	}
-	result
+	})
 }
 
 /// A window that covered part of a takeover target until the target was
@@ -983,33 +1004,42 @@ struct Occluder {
 /// HID input goes to whatever surface is frontmost at the point, and making
 /// the target key does not raise it, so a covered target would hand the input
 /// to the window above it. The target is raised when anything covers one of
-/// the points and the input refuses if it stays covered. Points whose owner
-/// cannot be hit-tested are not treated as covered.
+/// the points and the input refuses if it stays covered. Missing hit-test
+/// ownership is not evidence that input can safely hit the target.
 fn uncover(
 	window: &DesktopWindow,
 	pid: libc::pid_t,
 	wid: u32,
 	event: &PointerEvent,
-) -> CoreResult<Option<Occluder>> {
+	occluder: &mut Option<Occluder>,
+) -> CoreResult<()> {
 	let points = event_points(event);
-	let covering = || {
-		points
-			.into_iter()
-			.flatten()
-			.find_map(|(x, y)| ax::point_owner(x, y).filter(|owner| covers(owner, pid, wid)))
+	let covering = || -> CoreResult<Option<ax::PointOwner>> {
+		let mut first = None;
+		for (x, y) in points.into_iter().flatten() {
+			let owner = ax::point_owner(x, y).ok_or_else(|| DesktopError::input_failed(format!(
+				"cannot determine which window owns takeover point ({x}, {y}); no input was sent"
+			)))?;
+			if owner.window.is_none() {
+				return Err(DesktopError::input_failed(
+					"takeover point has no identifiable native window; no input was sent",
+				));
+			}
+			if covers(&owner, pid, wid) && first.is_none() {
+				first = Some(owner);
+			}
+		}
+		Ok(first)
 	};
-	let Some(first) = covering() else {
-		return Ok(None);
+	let Some(first) = covering()? else {
+		return Ok(());
 	};
-	let occluder = first
-		.window
-		.map(|window| Occluder { pid: first.pid, window });
-	// A failed raise surfaces below as the target staying covered.
-	let _ = ax::MacAx::new().raise(window);
+	*occluder = first.window.map(|window| Occluder { pid: first.pid, window });
+	ax::MacAx::new().raise(window)?;
 	let deadline = Instant::now() + UNCOVER_TIMEOUT;
 	loop {
-		match covering() {
-			None => return Ok(occluder),
+		match covering()? {
+			None => return Ok(()),
 			Some(owner) if Instant::now() >= deadline => {
 				return Err(DesktopError::input_failed(format!(
 					"window {wid} stays covered by process {} at the takeover input point, so the \
@@ -1023,10 +1053,9 @@ fn uncover(
 }
 
 /// Whether the surface at a point belongs to something other than the target
-/// window: another process, or another regular window of the target process.
-/// The target's own sheets, popovers, and menus count as the target.
+/// window. A same-process panel or unknown window id is not exact ownership.
 fn covers(owner: &ax::PointOwner, pid: libc::pid_t, wid: u32) -> bool {
-	owner.pid != pid || (owner.standard_window && owner.window.is_some_and(|window| window != wid))
+	owner.pid != pid || owner.window != Some(wid)
 }
 
 /// The global points a pointer event hits first and last.
@@ -1057,12 +1086,14 @@ fn preserving_cursor(
 		.map_err(|()| DesktopError::input_failed("failed to read the Quartz cursor location"))?
 		.location();
 	let result = action();
-	// Best effort: the input already landed, so a failed warp must not report
-	// the action itself as failed and invite a duplicate retry. Re-associating
-	// skips the ~250ms local-mouse freeze macOS applies after a warp.
-	let _ = CGDisplay::warp_mouse_cursor_position(prior);
-	let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
-	result
+	// Attempt both operations even if one fails, and distinguish restoration
+	// failure from non-delivery so callers do not blindly repeat the action.
+	let warp = CGDisplay::warp_mouse_cursor_position(prior);
+	let associate = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+	let cleanup = warp.and(associate).map_err(|error| {
+		DesktopError::input_failed(format!("restoring the user's cursor failed ({error:?})"))
+	});
+	skylight::after_cleanup(result, cleanup)
 }
 
 /// Moves the real pointer to `point` before HID input there, since `AppKit`
@@ -1349,13 +1380,35 @@ mod tests {
 	}
 
 	#[test]
-	fn only_foreign_or_sibling_document_windows_cover_the_target() {
-		let owner = |pid, window, standard_window| ax::PointOwner { pid, window, standard_window };
-		assert!(!covers(&owner(7, Some(42), true), 7, 42));
-		assert!(!covers(&owner(7, Some(43), false), 7, 42));
-		assert!(!covers(&owner(7, None, true), 7, 42));
-		assert!(covers(&owner(7, Some(43), true), 7, 42));
-		assert!(covers(&owner(8, Some(42), true), 7, 42));
-		assert!(covers(&owner(8, None, false), 7, 42));
+	fn interrupted_chord_releases_every_attempted_key() {
+		let source = source().expect("Quartz event source");
+		let mut events = Vec::new();
+		let result = key_chord(&source, &[KeyName::Ctrl, KeyName::Enter], |event| {
+			let kind = event.get_type();
+			let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+			events.push((kind as u32, code));
+			if matches!(kind, CGEventType::KeyDown) && code == 36 {
+				Err(DesktopError::input_failed("focus changed"))
+			} else {
+				Ok(())
+			}
+		});
+		assert!(result.is_err());
+		assert_eq!(events, vec![
+			(CGEventType::KeyDown as u32, 59),
+			(CGEventType::KeyDown as u32, 36),
+			(CGEventType::KeyUp as u32, 36),
+			(CGEventType::KeyUp as u32, 59),
+		]);
+	}
+
+	#[test]
+	fn takeover_requires_exact_hit_test_ownership() {
+		let owner = |pid, window| ax::PointOwner { pid, window };
+		assert!(!covers(&owner(7, Some(42)), 7, 42));
+		assert!(covers(&owner(7, Some(43)), 7, 42));
+		assert!(covers(&owner(7, None), 7, 42));
+		assert!(covers(&owner(8, Some(42)), 7, 42));
+		assert!(covers(&owner(8, None), 7, 42));
 	}
 }

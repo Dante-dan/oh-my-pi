@@ -1,7 +1,8 @@
 import type { CommandMetadata } from "@oh-my-pi/pi-utils/cli";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 
 export const acpHelp = {
-	description: "Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio",
+	description: "Run omp as an ACP (Agent Client Protocol) server over stdio",
 } satisfies CommandMetadata;
 
 export const agentsHelp = { description: "Manage bundled task agents" } satisfies CommandMetadata;
@@ -16,7 +17,7 @@ export const authGatewayHelp = {
 
 export const benchHelp = {
 	description:
-		"Benchmark models: TTFT/prefill vs decode throughput with p50/p95, across chat, prefill, generation, and prompt-cache workloads",
+		"Benchmark models: TTFT/prefill vs decode throughput with p50/p95, across chat, prefill, generation, and prompt-cache workloads, or single-user vs parallel load (--detailed)",
 } satisfies CommandMetadata;
 
 export const browserRelayHelp = {
@@ -77,6 +78,10 @@ export const grievancesHelp = {
 	description: "View, clean, or push reported tool issues (auto-QA grievances)",
 } satisfies CommandMetadata;
 
+export const loginHelp = {
+	description: "Log in to a model provider (terminal counterpart of /login)",
+} satisfies CommandMetadata;
+
 export const imagesHelp = {
 	description: "Inspect, diagnose, probe, and purge image publication backends",
 } satisfies CommandMetadata;
@@ -92,7 +97,7 @@ export const modelsHelp = { description: "List, search, and refresh available mo
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
 
 export const playHelp = {
-	description: "Replay a /record session recording in the terminal (space pauses, q quits)",
+	description: `Replay a /record session recording in the terminal (${formatKeyHint("space")} pauses, ${formatKeyHint("q")} quits)`,
 } satisfies CommandMetadata;
 
 export const psHelp = {
@@ -139,6 +144,10 @@ export const tinyModelsHelp = {
 } satisfies CommandMetadata;
 
 export const tokenHelp = { description: "Get the API key or OAuth token for a provider" } satisfies CommandMetadata;
+
+export const toksHelp = {
+	description: "Count a file or text with every embedded offline tokenizer (OpenAI, Claude, Qwen, …)",
+} satisfies CommandMetadata;
 
 export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",

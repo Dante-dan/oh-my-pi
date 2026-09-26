@@ -402,6 +402,12 @@ const DEFAULT_PAGE_SCROLL_LINES = 10;
 
 const MAX_UNDO_STACK = 100;
 
+/**
+ * Typed characters that replace the provisional space a Tab word accept adds, so
+ * they attach to the accepted word. Quotes are excluded: they may open a quote.
+ */
+const PROVISIONAL_SPACE_ABSORBERS = /^[.,;:!?)\]}]/;
+
 interface EditorState {
 	lines: string[];
 	cursorLine: number;
@@ -493,6 +499,18 @@ export interface EditorTextDecorationContext {
 export interface EditorTextAssistProvider {
 	/** Return ghost-text suffix for the partial word at the cursor, or `null`. */
 	getWordCompletion?(lines: string[], cursorLine: number, cursorCol: number): string | null;
+	/**
+	 * Report the fate of the ghost-text `suggestion` shown at the cursor:
+	 * `accepted` (Tab/→) or typed past (a typed character diverged from it).
+	 * Called with the editor state the suggestion was shown for.
+	 */
+	wordCompletionFeedback?(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		suggestion: string,
+		accepted: boolean,
+	): void;
 	/** Return a correction after one single-character insertion, or `null`. */
 	tryAutocorrect?(
 		lines: string[],
@@ -557,7 +575,8 @@ export class Editor implements Component, Focusable {
 
 	// Emacs-style kill ring
 	#killRing = new KillRing();
-	#lastAction: "kill" | "yank" | "type-word" | null = null;
+	/** Previous edit, for kill/yank chaining, undo coalescing, and the provisional space after a Tab word accept. */
+	#lastAction: "kill" | "yank" | "type-word" | "accept-word" | null = null;
 
 	// Character jump mode
 	#jumpMode: "forward" | "backward" | null = null;
@@ -1956,14 +1975,8 @@ export class Editor implements Component, Focusable {
 				this.#moveCursor(1, 0); // Cursor movement (within text or history entry)
 			}
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorRight")) {
-			// Right
-			// At end of line, accept the inline ghost word completion (IME-style) like Tab.
-			if (
-				this.#state.cursorCol >= (this.#state.lines[this.#state.cursorLine] ?? "").length &&
-				this.#acceptWordCompletion()
-			) {
-				return;
-			}
+			// Right walks over the ghost word completion as if it were typed: no trailing space.
+			if (this.#acceptWordCompletion({ space: false })) return;
 			this.#moveCursor(0, 1);
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorLeft")) {
 			// Left
@@ -2752,12 +2765,24 @@ export class Editor implements Component, Focusable {
 		// Undo coalescing: consecutive word typing collapses into one undo unit
 		// (mirrors Input); any other action resets the run via #lastAction.
 		const isWordChunk = [...segmenter.segment(char)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
+		let line = this.#state.lines[this.#state.cursorLine] || "";
+		// The space a Tab word accept added is provisional until the next keystroke:
+		// a typed space is swallowed, closing punctuation replaces it, anything else keeps it.
+		const provisionalSpace = this.#lastAction === "accept-word" && line[this.#state.cursorCol - 1] === " ";
+		if (provisionalSpace && char === " ") {
+			this.#lastAction = null;
+			return;
+		}
 		if (!isWordChunk || this.#lastAction !== "type-word") {
 			this.#recordUndoState();
 		}
 		this.#lastAction = isWordChunk ? "type-word" : null;
-
-		const line = this.#state.lines[this.#state.cursorLine] || "";
+		this.#reportTypedPastWordCompletion(char);
+		if (provisionalSpace && PROVISIONAL_SPACE_ABSORBERS.test(char)) {
+			line = line.slice(0, this.#state.cursorCol - 1) + line.slice(this.#state.cursorCol);
+			this.#state.lines[this.#state.cursorLine] = line;
+			this.#setCursorCol(this.#state.cursorCol - 1);
+		}
 
 		const before = line.slice(0, this.#state.cursorCol);
 		const after = line.slice(this.#state.cursorCol);
@@ -4042,7 +4067,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	async #handleTabCompletion(): Promise<void> {
-		if (this.#acceptWordCompletion()) return;
+		if (this.#acceptWordCompletion({ space: true })) return;
 		if (!this.#autocompleteProvider) return;
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -4059,13 +4084,24 @@ export class Editor implements Component, Focusable {
 			await this.#forceFileAutocomplete();
 		}
 	}
-	/** Insert the inline ghost word completion at the cursor, if any. Shared by Tab and right-arrow accept. */
-	#acceptWordCompletion(): boolean {
-		const wordCompletion = this.#getWordCompletion();
+	/**
+	 * Insert the shown ghost word completion at the cursor, if any. Tab passes
+	 * `space: true` for a trailing space that stays provisional until the next
+	 * keystroke (see `#insertCharacter`); right arrow passes `false` so a suffix
+	 * can follow the word directly.
+	 */
+	#acceptWordCompletion({ space }: { space: boolean }): boolean {
+		const wordCompletion = this.#getShownWordCompletion();
 		if (!wordCompletion) return false;
-		const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
-		const after = currentLine.slice(this.#state.cursorCol);
-		this.#insertTextAtCursor(wordCompletion + (/^[\s.,;:!?"\])}]/.test(after) ? "" : " "));
+		this.#textAssistProvider?.wordCompletionFeedback?.(
+			this.#state.lines,
+			this.#state.cursorLine,
+			this.#state.cursorCol,
+			wordCompletion,
+			true,
+		);
+		this.#insertTextAtCursor(space ? `${wordCompletion} ` : wordCompletion);
+		if (space) this.#lastAction = "accept-word";
 		return true;
 	}
 
@@ -4298,7 +4334,24 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteState || !this.#isEditorEmpty()) return undefined;
 		return this.placeholder?.() || undefined;
 	}
+	/** Typing `typed` where it diverges from the shown ghost completion rejects that ghost. */
+	#reportTypedPastWordCompletion(typed: string): void {
+		if (!this.#textAssistProvider?.wordCompletionFeedback) return;
+		const ghost = this.#getShownWordCompletion();
+		if (!ghost) return;
+		const overlap = Math.min(ghost.length, typed.length);
+		if (ghost.slice(0, overlap).toLocaleLowerCase() === typed.slice(0, overlap).toLocaleLowerCase()) return;
+		this.#textAssistProvider.wordCompletionFeedback(
+			this.#state.lines,
+			this.#state.cursorLine,
+			this.#state.cursorCol,
+			ghost,
+			false,
+		);
+	}
+	/** Word completion for the cursor; only offered at end of line, the only place ghost text renders. */
 	#getWordCompletion(): string | null {
+		if (this.#state.cursorCol < (this.#state.lines[this.#state.cursorLine] ?? "").length) return null;
 		return (
 			this.#textAssistProvider?.getWordCompletion?.(
 				this.#state.lines,
@@ -4306,5 +4359,10 @@ export class Editor implements Component, Focusable {
 				this.#state.cursorCol,
 			) ?? null
 		);
+	}
+	/** Word completion currently painted as ghost text: none while an autocomplete hint holds the slot. */
+	#getShownWordCompletion(): string | null {
+		const ghost = this.#getWordCompletion();
+		return ghost && this.#getInlineHint() === ghost ? ghost : null;
 	}
 }

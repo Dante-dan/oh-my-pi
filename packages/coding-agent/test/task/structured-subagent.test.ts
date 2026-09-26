@@ -110,6 +110,97 @@ function mockDiscovery(agent: AgentDefinition = AGENT): void {
 }
 
 describe("skill model selection", () => {
+	it("ignores foreign top-level model while accepting the explicit OMP metadata key", async () => {
+		mockDiscovery({ ...AGENT, model: ["@task"] });
+		const active = session({ modelRoles: { task: "openai/base" } });
+		active.skills = [
+			{
+				name: "foreign",
+				description: "Foreign skill",
+				filePath: "/tmp/foreign/SKILL.md",
+				baseDir: "/tmp/foreign",
+				source: "claude:user",
+				frontmatter: { model: "sonnet" },
+			},
+		];
+		active.sessionManager = {
+			getBranch: () => [
+				{
+					type: "custom_message",
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					attribution: "user",
+					details: { name: "foreign" },
+				},
+			],
+		} as ToolSession["sessionManager"];
+		expect((await resolveEffectiveSubagentPolicy(request({ session: active }))).modelOverride).toEqual([
+			"openai/base",
+		]);
+		active.skills[0].frontmatter = { model: "sonnet", metadata: { "omp.model": "openai/skill" } };
+		expect((await resolveEffectiveSubagentPolicy(request({ session: active }))).modelOverride).toEqual([
+			"openai/skill",
+		]);
+	});
+
+	it("does not route an agent-attributed autoloaded skill", async () => {
+		mockDiscovery({ ...AGENT, model: ["@task"] });
+		const active = session({ modelRoles: { task: "openai/base" } });
+		active.skills = [
+			{
+				name: "cheap",
+				description: "Cheap worker",
+				filePath: "/tmp/cheap/SKILL.md",
+				baseDir: "/tmp/cheap",
+				source: "native:user",
+				frontmatter: { model: "openai/cheap" },
+			},
+		];
+		active.sessionManager = {
+			getBranch: () => [
+				{
+					type: "custom_message",
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					attribution: "agent",
+					details: { name: "cheap" },
+				},
+			],
+		} as ToolSession["sessionManager"];
+		expect((await resolveEffectiveSubagentPolicy(request({ session: active }))).modelOverride).toEqual([
+			"openai/base",
+		]);
+	});
+
+	it("rejects a malformed selected skill model but ignores it for a pinned agent", async () => {
+		mockDiscovery({ ...AGENT, model: ["@task"] });
+		const active = session({ modelRoles: { task: "openai/base" } });
+		active.skills = [
+			{
+				name: "broken",
+				description: "Broken selector",
+				filePath: "/tmp/broken/SKILL.md",
+				baseDir: "/tmp/broken",
+				source: "native:user",
+				frontmatter: { model: [42] as unknown as string[] },
+			},
+		];
+		active.sessionManager = {
+			getBranch: () => [
+				{
+					type: "custom_message",
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					attribution: "user",
+					details: { name: "broken" },
+				},
+			],
+		} as ToolSession["sessionManager"];
+		await expect(resolveEffectiveSubagentPolicy(request({ session: active }))).rejects.toThrow(
+			'Invalid model in skill "broken" frontmatter.',
+		);
+		mockDiscovery({ ...AGENT, model: ["openai/pinned"] });
+		expect((await resolveEffectiveSubagentPolicy(request({ session: active }))).modelOverride).toEqual([
+			"openai/pinned",
+		]);
+	});
 	it("uses the invoked skill for an inheriting subagent without overriding explicit selectors", async () => {
 		mockDiscovery({ ...AGENT, model: ["@task"] });
 		const active = session({ modelRoles: { task: "openai/base" } });
@@ -119,7 +210,7 @@ describe("skill model selection", () => {
 				description: "Cheap worker",
 				filePath: "/tmp/cheap/SKILL.md",
 				baseDir: "/tmp/cheap",
-				source: "test",
+				source: "native:user",
 				frontmatter: { model: "openai/cheap" },
 			},
 		];
@@ -150,7 +241,7 @@ describe("skill model selection", () => {
 				description: "Cheap worker",
 				filePath: "/tmp/cheap/SKILL.md",
 				baseDir: "/tmp/cheap",
-				source: "test",
+				source: "native:user",
 				frontmatter: { model: "openai/cheap" },
 			},
 		];

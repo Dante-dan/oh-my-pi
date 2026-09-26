@@ -1238,6 +1238,8 @@ export interface AgentModelPatternResolutionOptions {
 	requestModel?: string | string[];
 	settingsOverride?: string | string[];
 	agentModel?: string | string[];
+	/** Invocation-scoped skill selector, below a pinned agent model. */
+	skillModel?: string | string[] | (() => string | string[] | undefined);
 	settings?: Settings;
 	activeModelPattern?: string;
 	fallbackModelPattern?: string;
@@ -1251,7 +1253,15 @@ interface EffectiveAgentModelSelection {
 function resolveEffectiveAgentModelSelection(
 	options: AgentModelPatternResolutionOptions,
 ): EffectiveAgentModelSelection {
-	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
+	const {
+		requestModel,
+		settingsOverride,
+		agentModel,
+		skillModel,
+		settings,
+		activeModelPattern,
+		fallbackModelPattern,
+	} = options;
 
 	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings);
 	if (requestPatterns.length > 0) {
@@ -1267,6 +1277,11 @@ function resolveEffectiveAgentModelSelection(
 	const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
 	const singleAgentPattern = normalizedAgentPatterns.length === 1 ? normalizedAgentPatterns[0] : undefined;
 	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
+	if (agentModel === undefined || agentInheritsSessionModel) {
+		const selectedSkillModel = typeof skillModel === "function" ? skillModel() : skillModel;
+		const skillPatterns = resolveConfiguredModelPatterns(selectedSkillModel, settings);
+		if (skillPatterns.length > 0) return { source: selectedSkillModel, patterns: skillPatterns };
+	}
 	if (configuredAgentPatterns.length > 0) {
 		if (
 			singleAgentPattern === formatModelRoleAlias("task") ||

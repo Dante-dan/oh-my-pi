@@ -293,7 +293,8 @@ function invokedSkillModel(session: ToolSession): string | string[] | undefined 
 		if (typeof name !== "string") return undefined;
 		const skill = session.skills?.find(candidate => candidate.name === name);
 		if (!skill) return undefined;
-		const direct = skill.frontmatter?.model;
+		// Foreign providers may use `model` for their own, incompatible skill semantics.
+		const direct = skill.source.startsWith("native:") ? skill.frontmatter?.model : undefined;
 		const metadata = skill.frontmatter?.metadata;
 		const namespaced =
 			metadata && typeof metadata === "object" && "omp.model" in metadata ? metadata["omp.model"] : undefined;
@@ -371,17 +372,11 @@ export async function resolveEffectiveSubagentPolicy(
 		: undefined;
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const agentModel = effectiveAgent.model;
-	const inheritsConfiguredModel =
-		agentModel === undefined ||
-		(agentModel.length === 1 && (agentModel[0] === "@task" || agentModel[0] === "@default"));
-	const skillModel =
-		request.model === undefined && agentModelOverrides[agentName] === undefined && inheritsConfiguredModel
-			? invokedSkillModel(request.session)
-			: undefined;
 	const modelResolution = {
 		requestModel: request.model,
 		settingsOverride: agentModelOverrides[agentName],
-		agentModel: skillModel ?? agentModel,
+		agentModel,
+		skillModel: () => invokedSkillModel(request.session),
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),

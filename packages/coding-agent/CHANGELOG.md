@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added the `wait` tool automatically to agents that use `task` or `bash` to improve background process coordination
 - Added a context-aware hint system for empty composers that displays suggestions based on agent activity and effort
 - Added an optional `scope` to the `retain` and `learn` tools, offered when `mnemopi.scoping` is `global` or `per-project-tagged`: `scope: "global"` stores a memory or lesson in the Mnemopi bank every project recalls instead of the current project's bank ([#13324](https://github.com/can1357/oh-my-pi/pull/13324) by [@alphastorm](https://github.com/alphastorm)).
 - Added `/btw` to the commands available from a focused subagent view; it asks about the focused agent's transcript instead of the main session's, and its answers can be copied or followed up but not branched into the main session ([#13412](https://github.com/can1357/oh-my-pi/pull/13412) by [@H4vC](https://github.com/H4vC))

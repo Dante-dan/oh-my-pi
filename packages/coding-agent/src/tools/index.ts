@@ -757,10 +757,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 				cfgCheckpointEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		// Subagents never block on `wait`: owned job results re-wake their run
-		// through the executor's quiescence barrier, and parent messages steer them.
 		if (name === "wait") {
-			if ((session.taskDepth ?? 0) > 0) return false;
 			return (
 				cfgAsyncEnabled.get(session.settings) ||
 				(session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)) ||

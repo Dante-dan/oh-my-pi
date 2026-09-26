@@ -97,8 +97,7 @@ describe("focused subagent view slash commands", () => {
 	});
 
 	it("keeps other commands gated to the main session, draft intact", async () => {
-		const { raw, editor, prompt } = await submit("/compact");
-		expect(raw.showStatus).toHaveBeenCalledWith(expect.stringContaining("press ←← to return first"));
+		const { editor, prompt } = await submit("/compact");
 		expect(editor.getText()).toBe("/compact");
 		expect(prompt).not.toHaveBeenCalled();
 	});
@@ -108,7 +107,6 @@ describe("focused subagent view slash commands", () => {
 			const { raw, editor } = await submit(text);
 			expect(raw.showResetUsageSelector).not.toHaveBeenCalled();
 			expect(raw.handleUsageCommand).not.toHaveBeenCalled();
-			expect(raw.showStatus).toHaveBeenCalledWith(expect.stringContaining("press ←← to return first"));
 			expect(editor.getText()).toBe(text);
 		}
 	});

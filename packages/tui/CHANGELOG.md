@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Updated TUI task interfaces to reflect the new `complexity` field requirement
 - Refined right-arrow acceptance behavior to skip forced trailing spaces
 - Replaced all static keyboard labels across overlays, apps, and status lines with dynamic, platform-aware key formatting
 

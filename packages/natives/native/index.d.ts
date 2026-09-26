@@ -1066,7 +1066,11 @@ export interface DesktopCapabilities {
   input: boolean
   ax: boolean
   backgroundWindowInput: boolean
-  deliveryModes: Array<string>
+  /**
+   * Whether window input accepts `takeover: true` (briefly activate the
+   * target and post real input).
+   */
+  takeover: boolean
   capturePermission: string
   inputPermission: string
   axPermission: string
@@ -2393,7 +2397,11 @@ export interface PointerOptions {
   button?: string
   count?: number
   modifiers?: Array<string>
-  deliveryMode?: string
+  /**
+   * Briefly activate the target window and post real input instead of the
+   * default background delivery.
+   */
+  takeover?: boolean
 }
 
 /**

@@ -9,7 +9,9 @@ use std::{
 };
 
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
-use objc2_core_foundation::{CFArray, CFBoolean, CFRetained, CFString, CFType, CGPoint, CGSize};
+use objc2_core_foundation::{
+	CFArray, CFBoolean, CFRetained, CFString, CFType, CGPoint, CGSize, Type,
+};
 
 use super::super::{
 	ax::{AxBounds, AxHandle, AxProps, normalize_role_macos},
@@ -19,6 +21,11 @@ use super::super::{
 };
 
 const AX_TIMEOUT_SECONDS: f32 = 2.0;
+/// Messaging timeout for the focus and hit-test probes made around input
+/// delivery, so a hung application cannot stall the action itself.
+const PROBE_TIMEOUT_SECONDS: f32 = 0.5;
+/// Bounded `AXParent` ascent when an element does not expose `AXWindow`.
+const MAX_ANCESTRY_DEPTH: usize = 40;
 
 type GetWindowIdFn = unsafe extern "C" fn(&AXUIElement, *mut u32) -> AXError;
 
@@ -63,20 +70,148 @@ impl MacAx {
 		self.perform(&root, "AXRaise")
 	}
 }
-/// Make the addressed window the app's main/focused window while foreground
-/// delivery has deliberately activated the app. This is best-effort at the
-/// input callsite because keyboard delivery must still work without AX trust.
-pub(super) fn prepare_foreground_input(window: &DesktopWindow) -> CoreResult<()> {
-	let mut backend = MacAx::new();
-	let root = backend.window_root(window)?;
-	let element = mac_handle(&root)?;
-	for attribute in ["AXMain", "AXFocused"] {
-		let attribute = CFString::from_str(attribute);
-		// SAFETY: The retained element, attribute, and singleton CFBoolean remain
-		// valid for the synchronous setter call.
-		let _ = unsafe { element.set_attribute_value(&attribute, CFBoolean::new(true)) };
+
+/// One accessibility top-level window of an application, mapped to its
+/// `WindowServer` id.
+pub(super) struct AxWindowRecord {
+	pub(super) id:        u32,
+	/// `AXMinimized`; `None` when the attribute could not be read.
+	pub(super) minimized: Option<bool>,
+}
+
+/// The owner of the hit-testable surface at a global point.
+pub(super) struct PointOwner {
+	pub(super) pid:             libc::pid_t,
+	/// `WindowServer` id of the surface's top-level window, when AX exposes it.
+	pub(super) window:          Option<u32>,
+	/// Whether that window is a regular document window rather than a sheet,
+	/// popover, menu, or panel.
+	pub(super) standard_window: bool,
+}
+
+/// `WindowServer` id of `pid`'s `AXFocusedWindow`.
+pub(super) fn focused_window_id(pid: libc::pid_t) -> Option<u32> {
+	let app = probe_application(pid)?;
+	let window = copy_element(&app, "AXFocusedWindow")?;
+	window_id(&window)
+}
+
+/// The window that should regain key status when `pid` is handed keyboard
+/// focus back: its focused window, else its main window.
+pub(super) fn key_window_id(pid: libc::pid_t) -> Option<u32> {
+	let app = probe_application(pid)?;
+	["AXFocusedWindow", "AXMainWindow"]
+		.into_iter()
+		.find_map(|attribute| {
+			let window = copy_element(&app, attribute)?;
+			window_id(&window)
+		})
+}
+
+/// The application's `AXWindows`, mapped through `_AXUIElementGetWindow`.
+///
+/// Unlike `WindowServer`'s window list, this omits the extra layer-0
+/// compositor surfaces Chromium, Electron, and `WebKit` hosts create per
+/// native window, which can never independently become the key window.
+/// `None` when the window-id SPI or the application's accessibility tree is
+/// unavailable, so nothing can be proven about the process's windows.
+pub(super) fn window_records(pid: libc::pid_t) -> Option<Vec<AxWindowRecord>> {
+	(*GET_WINDOW_ID)?;
+	let app = probe_application(pid)?;
+	enable_web_accessibility(pid, &app);
+	let windows = copy_elements_optional(&app, "AXWindows")?;
+	Some(
+		windows
+			.iter()
+			.filter_map(|window| {
+				Some(AxWindowRecord {
+					id:        window_id(window)?,
+					minimized: copy_bool(window, "AXMinimized"),
+				})
+			})
+			.collect(),
+	)
+}
+
+/// Hit-tests the global point `(x, y)` the way the pointer would, returning
+/// the process and window that own the frontmost surface there.
+pub(super) fn point_owner(x: f64, y: f64) -> Option<PointOwner> {
+	if !x.is_finite() || !y.is_finite() {
+		return None;
 	}
-	backend.perform(&root, "AXRaise")
+	let system = create_system_wide();
+	// SAFETY: The retained system-wide element is valid for the timeout update.
+	let _ = unsafe { system.set_messaging_timeout(PROBE_TIMEOUT_SECONDS) };
+	let mut output: *const AXUIElement = ptr::null();
+	let slot = NonNull::from(&mut output);
+	// SAFETY: `slot` is writable and the system-wide element remains retained
+	// through the synchronous hit-test.
+	if unsafe { system.copy_element_at_position(x as f32, y as f32, slot) } != AXError::Success {
+		return None;
+	}
+	let element = retained_element(output).ok()?;
+	let mut pid: libc::pid_t = 0;
+	// SAFETY: `pid` is writable and the retained element outlives the call.
+	if unsafe { element.pid(NonNull::from(&mut pid)) } != AXError::Success {
+		return None;
+	}
+	let window = element_window(&element);
+	Some(PointOwner {
+		pid,
+		window: window.as_deref().and_then(window_id),
+		standard_window: window
+			.as_deref()
+			.and_then(|window| copy_string(window, "AXSubrole"))
+			.is_some_and(|subrole| subrole == "AXStandardWindow"),
+	})
+}
+
+/// Raises `pid`'s window `wid` above its peers, best effort.
+pub(super) fn raise_window_id(pid: libc::pid_t, wid: u32) {
+	let Some(app) = probe_application(pid) else {
+		return;
+	};
+	let Some(windows) = copy_elements_optional(&app, "AXWindows") else {
+		return;
+	};
+	if let Some(window) = windows.iter().find(|window| window_id(window) == Some(wid)) {
+		let action = CFString::from_str("AXRaise");
+		// SAFETY: The retained window and action CFString remain valid for the
+		// synchronous AX request.
+		let _ = unsafe { window.perform_action(&action) };
+	}
+}
+
+fn probe_application(pid: libc::pid_t) -> Option<CFRetained<AXUIElement>> {
+	let app = create_application(pid).ok()?;
+	// SAFETY: The retained application element is valid for the timeout update.
+	let _ = unsafe { app.set_messaging_timeout(PROBE_TIMEOUT_SECONDS) };
+	Some(app)
+}
+
+fn window_id(window: &AXUIElement) -> Option<u32> {
+	let get_id = (*GET_WINDOW_ID)?;
+	let mut id = 0u32;
+	// SAFETY: `id` is writable and the retained window element outlives the
+	// call.
+	(unsafe { get_id(window, &mut id) } == AXError::Success && id != 0).then_some(id)
+}
+
+/// The top-level window containing `element`: its `AXWindow`, else the first
+/// window found by a bounded `AXParent` ascent.
+fn element_window(element: &AXUIElement) -> Option<CFRetained<AXUIElement>> {
+	if let Some(window) = copy_element(element, "AXWindow") {
+		return Some(window);
+	}
+	let mut current = element.retain();
+	for _ in 0..MAX_ANCESTRY_DEPTH {
+		match copy_string(&current, "AXRole").as_deref() {
+			Some("AXWindow") => return Some(current),
+			Some("AXApplication") | None => return None,
+			Some(_) => current = copy_element(&current, "AXParent")?,
+		}
+	}
+	None
 }
 
 impl AxBackend for MacAx {
@@ -137,7 +272,7 @@ impl AxBackend for MacAx {
 	fn props(&mut self, h: &AxHandle) -> CoreResult<AxProps> {
 		let element = mac_handle(h)?;
 		let native_role = copy_required_string(element, "AXRole")?;
-		let actions = copy_strings_from_action_names(element);
+		let actions = copy_strings_from_action_names(element).unwrap_or_default();
 		let child_count = copy_elements_optional(element, "AXChildren")
 			.map_or(0, |children| u32::try_from(children.len()).unwrap_or(u32::MAX));
 		Ok(AxProps {
@@ -169,6 +304,13 @@ impl AxBackend for MacAx {
 	fn perform(&mut self, h: &AxHandle, action: &str) -> CoreResult<()> {
 		let element = mac_handle(h)?;
 		let native = action_name(action);
+		let actions = copy_strings_from_action_names(element)?;
+		if !actions.contains(&native) {
+			return Err(DesktopError::ax_failed(format!(
+				"AX action '{native}' is not supported by this element; available actions: {}",
+				actions.join(", "),
+			)));
+		}
 		let action = CFString::from_str(&native);
 		// SAFETY: The retained element and action CFString remain valid for the
 		// synchronous AX request.
@@ -415,22 +557,19 @@ fn copy_attribute_names(element: &AXUIElement) -> CoreResult<Vec<CFRetained<CFTy
 	Ok(array.iter().collect())
 }
 
-fn copy_strings_from_action_names(element: &AXUIElement) -> Vec<String> {
+fn copy_strings_from_action_names(element: &AXUIElement) -> CoreResult<Vec<String>> {
 	let mut output: *const CFArray = ptr::null();
 	let slot = NonNull::from(&mut output);
 	// SAFETY: `slot` is writable and receives a create-rule retained CFArray on
 	// success.
-	if unsafe { element.copy_action_names(slot) } != AXError::Success {
-		return Vec::new();
-	}
-	let Some(pointer) = NonNull::new(output.cast_mut()) else {
-		return Vec::new();
-	};
+	ax_result(unsafe { element.copy_action_names(slot) }, "reading AX action names failed")?;
+	let pointer = NonNull::new(output.cast_mut())
+		.ok_or_else(|| DesktopError::ax_failed("AX action names returned a null array"))?;
 	// SAFETY: The successful copy call returned this array at +1 retain count.
 	let array: CFRetained<CFArray> = unsafe { CFRetained::from_raw(pointer) };
 	// SAFETY: AXUIElementCopyActionNames returns a CFArray of CFString CFTypes.
 	let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
-	array
+	Ok(array
 		.iter()
 		.filter_map(|value| {
 			value
@@ -438,7 +577,7 @@ fn copy_strings_from_action_names(element: &AXUIElement) -> Vec<String> {
 				.ok()
 				.map(|value| value.to_string())
 		})
-		.collect()
+		.collect())
 }
 
 fn bounds(element: &AXUIElement) -> Option<AxBounds> {

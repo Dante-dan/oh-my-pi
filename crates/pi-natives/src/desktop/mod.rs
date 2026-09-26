@@ -217,7 +217,7 @@ impl ParsedPointerOptions {
 			button:    MouseButton::parse(options.button.as_deref())?,
 			count:     options.count.unwrap_or(1).max(1),
 			modifiers: parse_modifiers(options.modifiers.as_deref().unwrap_or_default())?,
-			mode:      DeliveryMode::parse(options.delivery_mode.as_deref()),
+			mode:      DeliveryMode::from_takeover(options.takeover),
 		})
 	}
 }
@@ -534,19 +534,28 @@ impl Worker {
 				})?;
 				let x = bounds.x + bounds.width / 2.0;
 				let y = bounds.y + bounds.height / 2.0;
+				let owner = self.registry.target(reference)?;
 				let windows = self.backend()?.windows()?;
-				let window = windows
-					.into_iter()
-					.find(|w| {
-						x >= f64::from(w.x)
-							&& x < f64::from(w.x + w.width as i32)
-							&& y >= f64::from(w.y)
-							&& y < f64::from(w.y + w.height as i32)
-					})
-					.ok_or_else(|| {
-						DesktopError::window_not_found(format!("no window contains {reference}"))
-					})?;
-				let target = Target::Window(window.id);
+				// Refs from `win.ax()`/`win.find()` remember their window; a point
+				// hit-test would pick whatever window lists first there, including
+				// full-screen overlays such as the Dock or display filters.
+				let window_id = if windows.iter().any(|w| w.id == owner) {
+					owner
+				} else {
+					windows
+						.into_iter()
+						.find(|w| {
+							x >= f64::from(w.x)
+								&& x < f64::from(w.x + w.width as i32)
+								&& y >= f64::from(w.y)
+								&& y < f64::from(w.y + w.height as i32)
+						})
+						.map(|w| w.id)
+						.ok_or_else(|| {
+							DesktopError::window_not_found(format!("no window contains {reference}"))
+						})?
+				};
+				let target = Target::Window(window_id);
 				self.backend()?.pointer(
 					&target,
 					PointerEvent::Click {

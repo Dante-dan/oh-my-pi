@@ -12,6 +12,7 @@
 
 ### Changed
 
+- Updated window input policy to default to background actions and replaced the `delivery` option with a `takeover` boolean flag for opt-in activation
 - Aligned orchestrator task documentation and prompts to a Target/Change/Acceptance format
 - Migrated all hardcoded keyboard and slash-command shortcut labels to dynamic, platform-aware UI hints
 - Centralized usage tracking for slash commands and hints to a persistent, namespaced storage system

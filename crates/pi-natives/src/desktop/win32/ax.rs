@@ -1,10 +1,16 @@
+use std::ptr::with_exposed_provenance_mut;
+
 use uiautomation::{
 	UIAutomation, UIElement,
 	patterns::{
 		UIExpandCollapsePattern, UIInvokePattern, UILegacyIAccessiblePattern, UIScrollItemPattern,
 		UISelectionItemPattern, UITogglePattern, UIValuePattern,
 	},
-	types::{Handle, Point, UIProperty},
+	types::{ControlType, ExpandCollapseState, Handle, Point, UIProperty},
+};
+use windows_sys::Win32::{
+	Foundation::{HWND, POINT},
+	UI::WindowsAndMessaging::{GetDesktopWindow, WindowFromPoint},
 };
 
 use super::{
@@ -14,8 +20,11 @@ use super::{
 		error::{CoreResult, DesktopError},
 		types::{DesktopDisplay, DesktopWindow, DisplaySelector},
 	},
-	capture,
+	capture, window,
 };
+
+/// Ancestors of a hit-tested element searched for the control that owns it.
+const MAX_PRESS_ANCESTORS: usize = 8;
 
 pub(super) struct Win32Ax {
 	automation_initialized: bool,
@@ -52,6 +61,74 @@ impl Win32Ax {
 
 	fn walker(&mut self) -> CoreResult<uiautomation::UITreeWalker> {
 		self.automation()?.get_raw_view_walker().map_err(ax_error)
+	}
+
+	/// Top-level window hosting `element`, found through the nearest ancestor
+	/// that owns a native window; `None` for the desktop itself.
+	fn host_root(&mut self, element: &UIElement) -> Option<HWND> {
+		let walker = self.walker().ok()?;
+		let mut current = element.clone();
+		for _ in 0..64 {
+			if let Some(hwnd) = native_window(&current) {
+				let root = window::root(hwnd);
+				// SAFETY: GetDesktopWindow has no preconditions.
+				return (root != unsafe { GetDesktopWindow() }).then_some(root);
+			}
+			current = walker.get_parent(&current).ok()?;
+		}
+		None
+	}
+
+	/// Runs a pattern call so the window hosting `element` cannot take the
+	/// foreground from the user: XAML and Chromium hosts activate themselves
+	/// from pattern handlers.
+	fn contained(
+		&mut self,
+		element: &UIElement,
+		call: impl FnOnce() -> CoreResult<()>,
+	) -> CoreResult<()> {
+		match self.host_root(element) {
+			Some(root) => window::contain_pattern_activation(root, call),
+			None => call(),
+		}
+	}
+
+	/// Presses the control under a physical screen point through UI
+	/// Automation, for toolkits that drop posted clicks (WPF, `WinUI` 3, Tk,
+	/// GTK). Returns whether a pattern ran.
+	///
+	/// Only controls whose click does the same thing wherever it lands inside
+	/// them qualify, so canvases and panes keep pixel semantics and stay
+	/// refused. The point must hit `root`'s visible window tree, so an
+	/// occluding window is never pressed.
+	pub(super) fn invoke_at_point(&mut self, root: HWND, point: POINT) -> bool {
+		// SAFETY: WindowFromPoint takes a scalar point.
+		let visible = unsafe { WindowFromPoint(point) };
+		if visible.is_null() || window::root(visible) != root {
+			return false;
+		}
+		let Ok(automation) = self.automation() else {
+			return false;
+		};
+		let Ok(walker) = automation.get_raw_view_walker() else {
+			return false;
+		};
+		let Ok(mut element) = automation.element_from_point(Point::new(point.x, point.y)) else {
+			return false;
+		};
+		for _ in 0..MAX_PRESS_ANCESTORS {
+			if let Some(press) = positionless_press(&element) {
+				return window::contain_pattern_activation(root, || press.run()).is_ok();
+			}
+			if native_window(&element) == Some(root) {
+				break;
+			}
+			let Ok(parent) = walker.get_parent(&element) else {
+				break;
+			};
+			element = parent;
+		}
+		false
 	}
 
 	fn refresh_displays(&mut self) {
@@ -91,6 +168,66 @@ impl Win32Ax {
 
 fn ax_error(error: impl std::fmt::Display) -> DesktopError {
 	DesktopError::ax_failed(format!("UI Automation failed: {error}"))
+}
+
+/// Native window handle `element` represents, if any.
+fn native_window(element: &UIElement) -> Option<HWND> {
+	let raw: isize = element.get_native_window_handle().ok()?.into();
+	(raw != 0).then(|| with_exposed_provenance_mut(raw as usize))
+}
+
+/// UI Automation pattern performing a control's position-independent click.
+enum PositionlessPress {
+	Invoke(UIInvokePattern),
+	Expand(UIExpandCollapsePattern),
+	Collapse(UIExpandCollapsePattern),
+}
+
+impl PositionlessPress {
+	fn run(&self) -> Result<(), uiautomation::Error> {
+		match self {
+			Self::Invoke(pattern) => pattern.invoke(),
+			Self::Expand(pattern) => pattern.expand(),
+			Self::Collapse(pattern) => pattern.collapse(),
+		}
+	}
+}
+
+/// The press for a control whose click does the same thing wherever it lands
+/// inside it. Menu items with a submenu toggle it through `ExpandCollapse`,
+/// where `Invoke` does nothing.
+fn positionless_press(element: &UIElement) -> Option<PositionlessPress> {
+	let control_type = element.get_control_type().ok()?;
+	if control_type == ControlType::MenuItem
+		&& let Ok(pattern) = element.get_pattern::<UIExpandCollapsePattern>()
+	{
+		match pattern.get_state() {
+			Ok(ExpandCollapseState::Collapsed | ExpandCollapseState::PartiallyExpanded) => {
+				return Some(PositionlessPress::Expand(pattern));
+			},
+			Ok(ExpandCollapseState::Expanded) => return Some(PositionlessPress::Collapse(pattern)),
+			Ok(ExpandCollapseState::LeafNode) | Err(_) => {},
+		}
+	}
+	let positionless = matches!(
+		control_type,
+		ControlType::Button
+			| ControlType::MenuItem
+			| ControlType::Hyperlink
+			| ControlType::TabItem
+			| ControlType::ListItem
+			| ControlType::CheckBox
+			| ControlType::RadioButton
+			| ControlType::SplitButton
+			| ControlType::TreeItem
+	);
+	if !positionless {
+		return None;
+	}
+	element
+		.get_pattern::<UIInvokePattern>()
+		.ok()
+		.map(PositionlessPress::Invoke)
 }
 
 fn optional(value: Result<String, uiautomation::Error>) -> Option<String> {
@@ -209,7 +346,8 @@ impl AxBackend for Win32Ax {
 
 	fn perform(&mut self, handle: &AxHandle, action: &str) -> CoreResult<()> {
 		let element = Self::element(handle)?;
-		match action.trim().to_ascii_lowercase().as_str() {
+		let action = action.trim().to_ascii_lowercase();
+		self.contained(element, || match action.as_str() {
 			"press" => {
 				if let Ok(pattern) = element.get_pattern::<UIInvokePattern>() {
 					return pattern.invoke().map_err(ax_error);
@@ -249,14 +387,17 @@ impl AxBackend for Win32Ax {
 			other => {
 				Err(DesktopError::ax_failed(format!("unsupported UI Automation action '{other}'")))
 			},
-		}
+		})
 	}
 
 	fn set_value(&mut self, handle: &AxHandle, value: &str) -> CoreResult<()> {
-		Self::element(handle)?
-			.get_pattern::<UIValuePattern>()
-			.and_then(|pattern| pattern.set_value(value))
-			.map_err(ax_error)
+		let element = Self::element(handle)?;
+		self.contained(element, || {
+			element
+				.get_pattern::<UIValuePattern>()
+				.and_then(|pattern| pattern.set_value(value))
+				.map_err(ax_error)
+		})
 	}
 
 	fn focus(&mut self, handle: &AxHandle) -> CoreResult<()> {

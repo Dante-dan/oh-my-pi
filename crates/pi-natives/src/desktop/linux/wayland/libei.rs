@@ -393,6 +393,14 @@ impl Libei {
 		let device = self.pointer.as_ref().ok_or_else(|| {
 			DesktopError::permission_denied("RemoteDesktop portal did not provide a libei pointer")
 		})?;
+		if let PointerEvent::Click { modifiers, .. } | PointerEvent::Drag { modifiers, .. } = &event
+			&& (modifiers.ctrl || modifiers.alt || modifiers.shift || modifiers.meta)
+			&& self.keyboard.is_none()
+		{
+			return Err(DesktopError::permission_denied(
+				"RemoteDesktop portal did not provide a libei keyboard to hold the gesture's modifiers",
+			));
+		}
 		let sequence = self.sequence;
 		self.sequence = self.sequence.wrapping_add(1);
 		Self::begin(device, sequence);
@@ -466,7 +474,9 @@ impl Libei {
 					let scroll = device.device.interface::<ei::Scroll>().ok_or_else(|| {
 						DesktopError::input_failed("libei device has no scroll interface")
 					})?;
-					scroll.scroll(dx as f32, dy as f32);
+					// `dx`/`dy` count wheel detents, as X11 buttons 4-7 and Win32
+					// WHEEL_DELTA do; libei's discrete axis is 120 per detent.
+					scroll.scroll_discrete(discrete_detents(dx)?, discrete_detents(dy)?);
 					device.device.device().frame(device.serial, time);
 					Ok(())
 				},
@@ -546,6 +556,15 @@ impl Libei {
 		self.finish(device);
 		Ok(())
 	}
+}
+
+/// Wheel detents → libei discrete scroll units (120 per detent).
+fn discrete_detents(value: f64) -> CoreResult<i32> {
+	let units = (value * 120.0).round();
+	if !units.is_finite() || units.abs() > f64::from(i32::MAX) {
+		return Err(DesktopError::input_failed(format!("scroll delta {value} is out of range")));
+	}
+	Ok(units as i32)
 }
 
 fn read_keymap(keymap: &Keymap) -> Option<KeyboardLayout> {

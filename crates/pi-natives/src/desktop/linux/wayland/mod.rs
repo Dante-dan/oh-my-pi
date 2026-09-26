@@ -188,7 +188,7 @@ impl Backend for WaylandBackend {
 			input: self.input_error.is_none(),
 			ax: self.ax.is_some(),
 			background_window_input: false,
-			delivery_modes: vec!["background".to_string()],
+			takeover: false,
 			capture_permission: if cfg!(feature = "wayland-pipewire") {
 				"prompt-or-granted".to_string()
 			} else {
@@ -407,12 +407,6 @@ mod tests {
 			"window w1 wayland-compositor-focus-only: Wayland cannot programmatically activate a \
 			 non-focused window; only the currently focused surface is reachable"
 		);
-	}
-
-	#[test]
-	fn capabilities_do_not_advertise_foreground_delivery() {
-		let mut backend = backend_without_services();
-		assert_eq!(backend.capabilities().delivery_modes, ["background"]);
 	}
 
 	#[test]

@@ -4,16 +4,17 @@ import { resetSettingsForTest, Settings } from "../../src/config/settings";
 import { renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
 import { MCPTool } from "../../src/mcp/tool-bridge";
 import { type MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
-import type { MCPServerConnection, MCPToolCallResult, MCPToolDefinition } from "../../src/mcp/types";
+import type { MCPServerConnection, MCPToolCallParams, MCPToolCallResult, MCPToolDefinition } from "../../src/mcp/types";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { CustomToolContext, CustomToolResult } from "../../src/extensibility/custom-tools/types";
+import { bridgeValueFromToolResult } from "../../src/eval/js/tool-bridge";
 
-function toolFor(result: MCPToolCallResult): MCPTool {
+function toolFor(result: MCPToolCallResult | ((params: MCPToolCallParams) => MCPToolCallResult)): MCPTool {
 	const connection = {
 		name: "rhizome-mcp",
 		transport: {
-			request: async (method: string) => {
-				if (method === "tools/call") return result as unknown;
+			request: async (method: string, params: MCPToolCallParams) => {
+				if (method === "tools/call") return typeof result === "function" ? result(params) : result;
 				throw new Error(`unexpected method ${method}`);
 			},
 			close: async () => {},
@@ -64,6 +65,35 @@ describe("MCP bridge structuredContent", () => {
 	it("leaves results without structuredContent untouched", async () => {
 		const text = await modelText({ content: [{ type: "text", text: "plain result" }] });
 		expect(text).toBe("plain result");
+	});
+
+	it("lets an eval consumer advance pages using opaque cursors rather than display text", async () => {
+		const cursor = "next:λ/```json";
+		const tool = toolFor(params => {
+			const next = params.arguments?.cursor;
+			if (next !== undefined && next !== cursor) throw new Error("invalid cursor");
+			return {
+				content: [{ type: "text", text: "Page returned; this text is not a data API." }],
+				structuredContent: {
+					items: next === undefined ? ["first"] : ["second"],
+					next_cursor: next === undefined ? cursor : null,
+				},
+			};
+		});
+		const items: string[] = [];
+		let next: string | null | undefined;
+		do {
+			const args = next === undefined ? {} : { cursor: next };
+			const result = await tool.execute("page", args, undefined, {} as CustomToolContext);
+			const value = bridgeValueFromToolResult(tool.name, args, result);
+			if (typeof value !== "object" || !("details" in value)) throw new Error("missing tool details");
+			const page = (value.details as MCPToolDetails).structuredContent;
+			if (!page || !Array.isArray(page.items)) throw new Error("missing structured page");
+			items.push(...page.items);
+			next = page.next_cursor as string | null;
+			if (items.length > 2) throw new Error("pagination did not terminate");
+		} while (next !== null);
+		expect(items).toEqual(["first", "second"]);
 	});
 });
 

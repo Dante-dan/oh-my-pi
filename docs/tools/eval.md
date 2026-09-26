@@ -150,6 +150,32 @@ JS helpers are asynchronous; Python file helpers are synchronous while `tool.<na
 
 `display()` captures JSON-compatible structures, images, markdown, or text according to the backend.
 
+### MCP structured results
+
+MCP calls return an object with `text` and MCP-specific `details`. When the server
+supplies `structuredContent`, it is available as `details.structuredContent`:
+
+```js
+const result = await tool.mcp__example_page({});
+if (result.hasError) throw new Error(result.text);
+const page = result.details.structuredContent;
+if (page === undefined) throw new Error("Server did not return structured data");
+display(page.next_cursor);
+```
+
+Python callers use `result["details"].get("structuredContent")`. The property is
+absent when the server supplies no structured result; OMP does not infer it from
+JSON-looking text. Error results can also carry structured data, so check
+`hasError` before treating a payload as a successful result.
+
+`text` remains the model-facing rendering, including any JSON echo and output
+truncation notices. Its display limits do not trim `details.structuredContent`;
+use server-side pagination/bounds for large data and display only the fields
+needed by the model. Preserving the object does not validate the server's output
+schema or make server data trusted. Ordinary tools keep their existing return
+shapes, including bare strings for text-only results without details.
+
+
 ### `completion()`
 
 A stateless, tool-free one-shot model call that returns a `CompletionHandle` immediately:

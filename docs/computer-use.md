@@ -115,6 +115,8 @@ await buttons[0].press();
 
 AX element actions need no screenshot. AX bounds and `computer.elementAt` use global desktop coordinates, not screenshot pixels. Each window AX snapshot advances the reference generation; only current and immediately previous references remain valid. Recover from `StaleRef` by taking a new AX snapshot.
 
+On macOS, `press()` requires the element to advertise `AXPress` in `actions()`; unsupported actions throw `AxFailed` even if the application would silently accept the request. Use `el.click()` for a coordinate click when the control has no press action.
+
 ## Clipboard and waiting
 
 ```js

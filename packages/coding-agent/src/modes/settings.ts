@@ -13,6 +13,7 @@ import {
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { setEditorGapComposerShape } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
 import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
+import { WORD_COMPLETION_METHODS } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { setInlineImageMaxColumns, setInlineImageMaxRows } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
@@ -872,16 +873,33 @@ export const cfgSpellingTypoDetection = register({
 
 export const cfgSpellingAutocomplete = register({
 	id: "spelling.autocomplete",
-	type: "boolean",
-	default: true,
+	type: "enum",
+	values: WORD_COMPLETION_METHODS,
+	default: "auto",
 	ui: {
 		tab: "interaction",
 		group: "Input",
-		label: "Word Autocomplete (macOS)",
+		label: "Word Autocomplete",
 		get description() {
-			return `Show macOS dictionary word completions as inline hints accepted with ${formatKeyHint("tab")}`;
+			return `Show predicted word completions as inline hints: ${formatKeyHint("tab")} accepts with a space, ${formatKeyHint("right")} without`;
 		},
-		condition: "macOS",
+		options: [
+			{ value: "off", label: "Off", description: "No word completion" },
+			{
+				value: "auto",
+				label: "Auto",
+				description: "SmolLM once its weights are ready; N-gram until then (weights download on first use)",
+			},
+			{ value: "ngram", label: "N-gram", description: "Learns your vocabulary from prompt history" },
+			{
+				value: "smollm",
+				label: "SmolLM",
+				description: "Small on-device language model (downloads weights on first use)",
+			},
+			...(process.platform === "darwin"
+				? [{ value: "apple" as const, label: "Apple", description: "macOS dictionary completions" }]
+				: []),
+		],
 	},
 });
 

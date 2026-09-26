@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added unified predictive text engine with pluggable N-gram, SmolLM2, and macOS native providers
+- Added `omp predict` CLI command for evaluating completion engine performance
+- Added cross-process prediction daemon for managing state, history ingestion, and engine fallbacks
 - Added support for dynamic eval prelude guidance via hidden session notices
 - Added a required `complexity` rationale field to the `task` tool for improved auto-thinking depth classification
 - Added the `wait` tool automatically to agents that use `task` or `bash` to improve background process coordination
@@ -13,6 +16,7 @@
 
 ### Changed
 
+- Updated `spelling.autocomplete` to an enum-based configuration for engine selection
 - Optimized mid-session `/computer` toggles to bypass full system-prompt rebuilds
 - Updated window input policy to default to background actions and replaced the `delivery` option with a `takeover` boolean flag for opt-in activation
 - Aligned orchestrator task documentation and prompts to a Target/Change/Acceptance format

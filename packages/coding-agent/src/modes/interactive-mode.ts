@@ -118,6 +118,8 @@ import {
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
+import { syncTextPrediction, textPredictionBackend } from "../predict/client";
+import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveMarkdownLinkTargets } from "../internal-urls/hyperlink-targets";
 import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
@@ -1513,10 +1515,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncEditorMaxHeight();
 		};
 		process.stdout.on("resize", this.#resizeHandler);
+		setWordPredictionHost(textPredictionBackend);
 		try {
 			this.historyStorage = HistoryStorage.open();
 			this.editor.setHistoryStorage(this.historyStorage);
 			this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
+			// The prediction daemon learns from history.db; nudge it once each prompt is durable.
+			this.historyStorage.setAddListener(syncTextPrediction);
 		} catch (error) {
 			logger.warn("History storage unavailable", { error: String(error) });
 		}

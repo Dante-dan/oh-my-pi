@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `TextPredictor` N-API binding for high-performance ghost-text completion engine management
+
 ### Changed
 
 - Replaced `deliveryModes` array with a unified `takeover` boolean capability for desktop input control

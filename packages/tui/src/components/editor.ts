@@ -404,9 +404,11 @@ const MAX_UNDO_STACK = 100;
 
 /**
  * Typed characters that replace the provisional space a Tab word accept adds, so
- * they attach to the accepted word. Quotes are excluded: they may open a quote.
+ * they attach to the accepted word: closing punctuation, and `-` for compounds
+ * (`cross-platform`; a spaced dash is still space, then `-`). Quotes are
+ * excluded: they may open a quote.
  */
-const PROVISIONAL_SPACE_ABSORBERS = /^[.,;:!?)\]}]/;
+const PROVISIONAL_SPACE_ABSORBERS = /^[-.,;:!?)\]}]/;
 
 interface EditorState {
 	lines: string[];
@@ -2767,8 +2769,9 @@ export class Editor implements Component, Focusable {
 		const isWordChunk = [...segmenter.segment(char)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
 		let line = this.#state.lines[this.#state.cursorLine] || "";
 		// The space a Tab word accept added is provisional until the next keystroke:
-		// a typed space is swallowed, closing punctuation replaces it, anything else keeps it.
-		const provisionalSpace = this.#lastAction === "accept-word" && line[this.#state.cursorCol - 1] === " ";
+		// a typed space is swallowed, closing punctuation or a hyphen replaces it,
+		// anything else keeps it (a newline drops it too, see #addNewLine).
+		const provisionalSpace = this.#hasProvisionalSpace();
 		if (provisionalSpace && char === " ") {
 			this.#lastAction = null;
 			return;
@@ -3002,13 +3005,17 @@ export class Editor implements Component, Focusable {
 	}
 
 	#addNewLine(): void {
+		// A provisional space from a Tab word accept would become trailing whitespace.
+		// Read before #resetKillSequence clears the accept marker.
+		const dropSpace = this.#hasProvisionalSpace();
 		this.#historyIndex = -1; // Exit history browsing mode
 		this.#resetKillSequence();
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
+		const splitCol = dropSpace ? this.#state.cursorCol - 1 : this.#state.cursorCol;
 
-		const before = currentLine.slice(0, this.#state.cursorCol);
+		const before = currentLine.slice(0, splitCol);
 		const after = currentLine.slice(this.#state.cursorCol);
 
 		// Split current line
@@ -3020,6 +3027,12 @@ export class Editor implements Component, Focusable {
 		this.#setCursorCol(0);
 
 		this.#notifyChange();
+	}
+
+	/** Whether the character before the cursor is the still-provisional space a Tab word accept inserted. */
+	#hasProvisionalSpace(): boolean {
+		const line = this.#state.lines[this.#state.cursorLine] ?? "";
+		return this.#lastAction === "accept-word" && line[this.#state.cursorCol - 1] === " ";
 	}
 
 	#shouldSubmitOnBackslashEnter(data: string, kb: KeybindingsManager): boolean {

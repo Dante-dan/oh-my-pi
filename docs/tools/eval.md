@@ -169,15 +169,12 @@ JSON-looking text. Error results can also carry structured data, so check
 `hasError` before treating a payload as a successful result.
 
 `text` remains the model-facing rendering, including any JSON echo and output
-truncation notices. Display truncation does not trim `details.structuredContent`
-in the live eval result: even after an oversized rendering spills, eval can use
-the complete server-supplied object. The persisted tool-result JSONL omits that
-duplicate top-level structured object after a successful MCP artifact spill;
-the artifact retains the full rendered text for recovery. Use server-side
-pagination/bounds for large data and display only the fields needed by the
-model. Preserving the live object does not validate the server's output schema
-or make server data trusted. Ordinary tools keep their existing return shapes,
-including bare strings for text-only results without details.
+truncation notices. Truncation does not trim `details.structuredContent`: code
+receives the complete server-supplied object even when the rendering spills. Use
+server-side pagination/bounds for large data and display only the fields needed
+by the model. The object is not validated against the server's output schema or
+treated as trusted. Ordinary tools keep their existing return shapes, including
+bare strings for text-only results without details.
 
 ### `completion()`
 

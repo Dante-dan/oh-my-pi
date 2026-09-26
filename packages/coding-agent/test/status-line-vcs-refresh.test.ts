@@ -755,18 +755,9 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 	// survives the inode swap on every platform.
 	it("keeps firing #onBranchChange across consecutive branch switches", async () => {
 		vi.restoreAllMocks();
-		const watch = vcs.watch;
-		let watcherReady = false;
-		vi.spyOn(vcs, "watch").mockImplementation((repository, onChange, interval) =>
-			watch(
-				repository,
-				() => {
-					watcherReady = true;
-					onChange();
-				},
-				interval,
-			),
-		);
+		gitControls.defaultBranch.mockReturnValue(Promise.withResolvers<string | null>().promise);
+		gitControls.statusSummary.mockReturnValue(Promise.withResolvers<GitStatus | null>().promise);
+		const watchFileSpy = vi.spyOn(nodeFs, "watchFile");
 
 		setProjectDir(repoDir);
 		const component = new StatusLineComponent(makeSession(), statusLineHost);
@@ -781,44 +772,39 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 				branchChanged.resolve();
 			}
 		});
-		try {
-			component.getTopBorder(80);
+		// Platform-independent pin: the watch must be a stat-poll of the HEAD
+		// *path* (inode-independent), not an fs.watch event subscription.
+		expect(watchFileSpy).toHaveBeenCalledWith(
+			path.join(repoDir, ".git", "HEAD"),
+			expect.objectContaining({ interval: vcs.HEAD_WATCH_INTERVAL_MS }),
+			expect.any(Function),
+		);
+		// Prime the branch cache off the initial HEAD. The status/default mocks
+		// never resolve, so this cold paint cannot fire #onBranchChange itself.
+		component.getTopBorder(80);
+
+		const switchTo = async (branchName: string) => {
 			const gitDir = path.join(repoDir, ".git");
 			const headLock = path.join(gitDir, "HEAD.lock");
-			const replaceHead = async (branchName: string) => {
-				await fs.writeFile(headLock, `ref: refs/heads/${branchName}\n`);
-				await fs.rename(headLock, path.join(gitDir, "HEAD"));
-			};
+			// Reproduce Git's relevant integration boundary directly: write the
+			// lock, then atomically replace HEAD. Spawning Git adds process startup
+			// but no coverage to the filesystem-watcher regression.
+			await fs.writeFile(headLock, `ref: refs/heads/${branchName}\n`);
+			branchChanged = Promise.withResolvers<void>();
+			expectedBranch = branchName;
+			const fired = branchChanged.promise;
+			await fs.rename(headLock, path.join(gitDir, "HEAD"));
+			await fired;
+			expectedBranch = null;
+		};
 
-			// Bun's initial stat is asynchronous and exposes no readiness event:
-			// an immediate rename can become its baseline without a callback.
-			// Warm up until a real watcher event, as Bun's own watchFile tests do.
-			// Only setup repeats; the two regression switches below are one-shot.
-			// Native stat polling cannot be advanced with JS fake timers.
-			const readyDeadline = Date.now() + 10_000;
-			while (!watcherReady) {
-				if (Date.now() >= readyDeadline) throw new Error("HEAD watcher did not become ready");
-				await replaceHead("main");
-				if (!watcherReady) await Bun.sleep(20);
-			}
+		await switchTo("first");
+		expect(component.getTopBorder(80).content).toContain("first");
 
-			const switchTo = async (branchName: string) => {
-				branchChanged = Promise.withResolvers<void>();
-				expectedBranch = branchName;
-				const fired = branchChanged.promise;
-				await replaceHead(branchName);
-				await fired;
-				expectedBranch = null;
-			};
+		// Regression: the second switch must still reach the display.
+		await switchTo("second");
+		expect(component.getTopBorder(80).content).toContain("second");
 
-			await switchTo("first");
-			expect(component.getTopBorder(80).content).toContain("first");
-
-			// Regression: the second switch must still reach the display.
-			await switchTo("second");
-			expect(component.getTopBorder(80).content).toContain("second");
-		} finally {
-			component.dispose();
-		}
+		component.dispose();
 	});
 });

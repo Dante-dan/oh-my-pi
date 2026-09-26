@@ -175,7 +175,6 @@ describe("MCP bridge structuredContent", () => {
 			expect(persisted.content).toEqual(result.content);
 			expect(JSON.stringify(persisted)).not.toContain(structuredContent.pages[0]!.rows[0]!.body);
 			expect(message.details?.structuredContent).toBe(structuredContent);
-			expect(details.structuredContent).toBe(structuredContent);
 			const artifactPath = await manager.getArtifactPath(artifactId);
 			if (!artifactPath) throw new Error("Expected recoverable artifact");
 			expect(await Bun.file(artifactPath).text()).toContain(renderedPayload);

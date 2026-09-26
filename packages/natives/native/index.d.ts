@@ -2163,14 +2163,6 @@ export declare function macOSAutocorrectWord(text: string, start: number, length
  */
 export declare function macOSCheckSpelling(text: string): Promise<Array<SpellingRange>>
 
-/**
- * Return macOS dictionary completions for one partial-word range.
- *
- * Returns an empty list when Apple's spelling service is unavailable.
- * On macOS, the lookup runs on the dedicated spelling thread.
- */
-export declare function macOSCompleteWord(text: string, start: number, length: number): Promise<Array<string>>
-
 /** Whether the host can use Apple's native spelling service. */
 export declare function macOSSpellCheckerAvailable(): boolean
 

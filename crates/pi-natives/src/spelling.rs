@@ -1,4 +1,5 @@
-//! macOS spelling, word-completion, and autocorrection services.
+//! macOS spelling (typo ranges, replacement guesses) and autocorrection
+//! services. Word completion lives in `pi_predict::apple` behind `TextPredictor`.
 //!
 //! `AppleSpell` exposes UTF-16 ranges through [`NSSpellChecker`]. JavaScript
 //! strings use the same indexing unit, so ranges cross N-API without remapping.
@@ -67,31 +68,6 @@ pub async fn macos_check_spelling(text: String) -> napi::Result<Vec<SpellingRang
 	#[cfg(not(target_os = "macos"))]
 	{
 		let _ = text;
-		Ok(Vec::new())
-	}
-}
-
-/// Return macOS dictionary completions for one partial-word range.
-///
-/// Returns an empty list when Apple's spelling service is unavailable.
-/// On macOS, the lookup runs on the dedicated spelling thread.
-#[napi(js_name = "macOSCompleteWord")]
-#[cfg_attr(
-	not(target_os = "macos"),
-	allow(clippy::unused_async, reason = "napi contract returns a Promise on every platform")
-)]
-pub async fn macos_complete_word(
-	text: String,
-	start: u32,
-	length: u32,
-) -> napi::Result<Vec<String>> {
-	#[cfg(target_os = "macos")]
-	{
-		platform::run(move || pi_predict::apple::appkit::completions(&text, start, length)).await
-	}
-	#[cfg(not(target_os = "macos"))]
-	{
-		let _ = (text, start, length);
 		Ok(Vec::new())
 	}
 }

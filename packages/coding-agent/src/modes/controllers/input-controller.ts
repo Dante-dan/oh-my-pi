@@ -137,6 +137,7 @@ const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s
  * `/usage reset`, which spends a saved rate-limit reset) still needs the main session.
  */
 const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
+	btw: () => true,
 	export: () => true,
 	usage: args => {
 		const { verb, rest } = parseSubcommand(args);
@@ -1333,8 +1334,8 @@ export class InputController {
 		if (text?.startsWith("/")) {
 			const parsed = parseSlashCommand(text);
 			if (parsed && FOCUSED_VIEW_COMMANDS[parsed.name]?.(parsed.args)) {
-				// Viewer-scoped commands: /export writes the focused transcript (with its
-				// own subagents), /usage reports account-wide limits.
+				// Viewer-scoped commands: /btw asks about the focused transcript, /export
+				// writes it (with its own subagents), /usage reports account-wide limits.
 				this.#recordSlashCommandUsage(text);
 				if ((await executeBuiltinSlashCommand(text, { ctx: this.ctx })) === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);

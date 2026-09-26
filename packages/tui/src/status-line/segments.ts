@@ -397,7 +397,8 @@ const modeSegment: StatusLineSegment = {
 		if (loop) {
 			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
 			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
-			const label = loop.state === "waiting" ? "Loop: next prompt repeats" : `Loop ${statusValue(ctx, loop.state)}`;
+			const stateLabel = loop.state === "waiting" ? "next prompt repeats" : loop.state;
+			const label = `Loop${loop.state === "waiting" ? ":" : ""} ${statusValue(ctx, stateLabel)}`;
 			const parts = [withIcon(icon, label)];
 			const limit = formatLoopLimit(loop.limit, ctx.now?.getTime());
 			if (limit) parts.push(statusValue(ctx, limit));

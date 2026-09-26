@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added support for dynamic eval prelude guidance via hidden session notices
 - Added a required `complexity` rationale field to the `task` tool for improved auto-thinking depth classification
 - Added the `wait` tool automatically to agents that use `task` or `bash` to improve background process coordination
 - Added a context-aware hint system for empty composers that displays suggestions based on agent activity and effort
@@ -12,6 +13,7 @@
 
 ### Changed
 
+- Optimized mid-session `/computer` toggles to bypass full system-prompt rebuilds
 - Updated window input policy to default to background actions and replaced the `delivery` option with a `takeover` boolean flag for opt-in activation
 - Aligned orchestrator task documentation and prompts to a Target/Change/Acceptance format
 - Migrated all hardcoded keyboard and slash-command shortcut labels to dynamic, platform-aware UI hints

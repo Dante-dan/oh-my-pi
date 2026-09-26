@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added copy and rewind shortcuts to the transcript selectors ([#13436](https://github.com/can1357/oh-my-pi/pull/13436) by [@Dante-dan](https://github.com/Dante-dan)).
 - Added `wordCompletionFeedback` provider hook for improved ghost-text tracking
 - Added provisional space handling for Tab completions to support seamless punctuation attachment
 

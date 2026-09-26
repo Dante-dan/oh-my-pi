@@ -97,6 +97,16 @@ function makeSelector(
 }
 
 describe("RewindSelectorComponent", () => {
+	it("shows copy success and failure inside the fullscreen selector", () => {
+		const selector = makeSelector(() => {});
+		selector.showCopyFeedback("Copied user turn to clipboard", true);
+		expect(Bun.stripANSI(selector.render(80).join("\n"))).toContain("Copied user turn to clipboard");
+		selector.showCopyFeedback("Nothing to copy in that item", false);
+		const rendered = Bun.stripANSI(selector.render(80).join("\n"));
+		expect(rendered).toContain("Nothing to copy in that item");
+		expect(rendered).not.toContain("Copied user turn to clipboard");
+		selector.dispose();
+	});
 	beforeAll(async () => {
 		await initTheme();
 	});

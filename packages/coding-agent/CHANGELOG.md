@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added copy and rewind actions to both transcript selectors ([#13436](https://github.com/can1357/oh-my-pi/pull/13436) by [@Dante-dan](https://github.com/Dante-dan)).
 - Added a required `complexity` rationale field to the `task` tool for improved auto-thinking depth classification
 - Added the `wait` tool automatically to agents that use `task` or `bash` to improve background process coordination
 - Added a context-aware hint system for empty composers that displays suggestions based on agent activity and effort

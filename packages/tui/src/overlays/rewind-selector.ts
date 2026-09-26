@@ -106,6 +106,7 @@ export class RewindSelectorComponent implements Component {
 	/** Same, for the active sibling column. */
 	#siblingVisible: boolean[] | undefined;
 	#expanded = false;
+	#copyFeedback: { message: string; success: boolean } | undefined;
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -141,6 +142,12 @@ export class RewindSelectorComponent implements Component {
 	/** Number of selectable rewind points on the current path; hosts skip mounting when zero. */
 	get targetCount(): number {
 		return this.#targets.length;
+	}
+
+	/** Copy feedback must be drawn inside this fullscreen overlay. */
+	showCopyFeedback(message: string, success: boolean): void {
+		this.#copyFeedback = { message, success };
+		this.deps.requestRender();
 	}
 
 	#newBuilder(): ChatTranscriptBuilder {
@@ -506,7 +513,12 @@ export class RewindSelectorComponent implements Component {
 				lines: composed.lines,
 				anchor: this.#outlineAnchor(composed),
 			},
-			footer: [theme.fg("dim", `${position}${keys}`)],
+			footer: [
+				...(this.#copyFeedback
+					? [theme.fg(this.#copyFeedback.success ? "success" : "error", this.#copyFeedback.message)]
+					: []),
+				theme.fg("dim", `${position}${keys}`),
+			],
 		};
 	}
 

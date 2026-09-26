@@ -1098,11 +1098,11 @@ export class SelectorController {
 			onCopy: target => {
 				const item = copyOutlineTarget(target);
 				if (!item.content.trim()) {
-					this.ctx.showStatus("Nothing to copy in that item");
+					selector.showCopyFeedback("Nothing to copy in that item", false);
 					return;
 				}
 				void copyToClipboard(item.content);
-				this.ctx.showStatus(`Copied ${item.label} to clipboard`);
+				selector.showCopyFeedback(`Copied ${item.label} to clipboard`, true);
 			},
 			onCancel: done,
 		});

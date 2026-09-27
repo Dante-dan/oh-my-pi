@@ -2,10 +2,21 @@
 
 ## [Unreleased]
 
+## [18.3.4] - 2026-09-27
+
+### Fixed
+
+- Fixed the native addon keeping every `bun test --isolate`/`--parallel` test file's global object and module graph alive, which grew each test worker by ~15 MB per file until the run was OOM-killed.
+
+## [18.3.3] - 2026-09-27
+
+### Added
+
+- Added a `TextPredictor` N-API binding for managing the high-performance ghost-text completion engine.
+
 ### Changed
 
-- Replaced `deliveryModes` array with a unified `takeover` boolean capability for desktop input control
-- Standardized pointer options to use `takeover: true` for forced foreground interaction
+- Updated desktop input-control capabilities to use a unified `takeover` setting, including `takeover: true` for forced foreground pointer interaction.
 
 ## [18.3.1] - 2026-09-25
 

@@ -366,6 +366,53 @@ export declare class Shell {
   liveBackgroundJobCount(): Promise<number>
 }
 
+/** One word-completion engine running on its own thread. */
+export declare class TextPredictor {
+  /**
+   * Spawn the engine thread and start opening the engine; load errors
+   * surface from [`TextPredictor::ready`] and every later call.
+   *
+   * # Errors
+   * Returns an error when the engine thread cannot be spawned.
+   */
+  constructor(options: TextPredictorOptions)
+  /**
+   * Resolve once the engine has loaded.
+   *
+   * # Errors
+   * Rejects with the engine's load error (missing weights, corrupt state).
+   */
+  ready(): Promise<void>
+  /**
+   * Ghost text for `prefix` typed after `before`, or `null`.
+   *
+   * # Errors
+   * Rejects when the engine failed to load.
+   */
+  complete(before: string, prefix: string): Promise<PredictedWord | null>
+  /**
+   * Learn from submitted prompts, in submission order.
+   *
+   * # Errors
+   * Rejects when the engine failed to load.
+   */
+  observe(prompts: Array<string>): Promise<void>
+  /**
+   * Learn from a suggestion the user accepted (`true`) or typed past.
+   *
+   * # Errors
+   * Rejects when the engine failed to load.
+   */
+  feedback(before: string, prefix: string, suggestion: string, accepted: boolean): Promise<void>
+  /**
+   * Flush learned state to the state directory.
+   *
+   * # Errors
+   * Rejects when the engine failed to load or the state cannot be written.
+   */
+  persist(): Promise<void>
+}
+
 /**
  * Dedicated writer thread for one terminal fd.
  *
@@ -633,24 +680,13 @@ export declare class VcsRepo {
 export declare function __ompInstallTokioRuntime(): void
 
 /**
- * Version sentinel — exists solely so the JS loader can prove at load time
- * that the `.node` file on disk is from the same package release as the
- * `index.js` ESM wrapper invoking it.
+ * Release version stamped into this `.node` after linking.
  *
- * The `js_name` is bumped by `scripts/release.ts` to match the new
- * `Cargo.toml` / `package.json` version on every release. The JS loader
- * computes the expected name from `package.json#version` and refuses to use
- * a `.node` that doesn't expose it, turning the silent
- * `<sym> is not a function` crash from a locked-file update (the canonical
- * Windows `bun install -g` failure mode) into a clear load-time error.
- *
- * Bump policy: `__piNativesV{major}_{minor}_{patch}` — non-alphanumerics in
- * the version string are mapped to `_` to keep it a valid JS identifier.
- * MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
- * `packages/natives/native/index.js` (which derives the name from
- * `package.json#version`).
+ * `None` for an unstamped build. The JS loader compares it against
+ * `package.json#version` so a `.node` from another release fails at load time
+ * with an actionable error instead of a later `<sym> is not a function` crash.
  */
-export declare function __piNativesV18_3_2(): void
+export declare function __piNativesBuildVersion(): string | null
 
 /**
  * Reports whether the on-device model can generate, as an `availability`
@@ -2116,14 +2152,6 @@ export declare function macOSAutocorrectWord(text: string, start: number, length
  */
 export declare function macOSCheckSpelling(text: string): Promise<Array<SpellingRange>>
 
-/**
- * Return macOS dictionary completions for one partial-word range.
- *
- * Returns an empty list when Apple's spelling service is unavailable.
- * On macOS, the lookup runs on the dedicated spelling thread.
- */
-export declare function macOSCompleteWord(text: string, start: number, length: number): Promise<Array<string>>
-
 /** Whether the host can use Apple's native spelling service. */
 export declare function macOSSpellCheckerAvailable(): boolean
 
@@ -2426,6 +2454,14 @@ export interface PowerAssertionOptions {
   user?: boolean
   /** `caffeinate -d`: prevent the display from idle-sleeping. */
   display?: boolean
+}
+
+/** Ghost text for the word being typed. */
+export interface PredictedWord {
+  /** Characters to paint after the typed prefix. */
+  suffix: string
+  /** Engine-calibrated probability that `suffix` is exactly right. */
+  confidence: number
 }
 
 /** Current state of a process reference. */
@@ -3149,6 +3185,18 @@ export interface SummarySegment {
  * mapping.
  */
 export declare function supportsLanguage(lang: string): boolean
+
+/** Options for [`TextPredictor::new`]. */
+export interface TextPredictorOptions {
+  /** Engine: `ngram`, `smollm`, or `apple`. */
+  method: string
+  /** Private directory for persisted learned state. */
+  stateDir: string
+  /** Directory holding downloaded model weights (`smollm` only). */
+  modelDir?: string
+  /** Show threshold override; omit for the engine's tuned default. */
+  showThreshold?: number
+}
 
 /**
  * Truncate text to a visible width, preserving ANSI codes.

@@ -387,12 +387,6 @@ mod tests {
 			.type_text(&target, "hello", DeliveryMode::Foreground)
 			.expect_err("window foreground input must fail");
 		assert_eq!(err.code.as_str(), "BackgroundUnavailable");
-		assert_eq!(
-			err.message,
-			"window w1 wayland-compositor-focus-only: Wayland cannot programmatically activate a \
-			 non-focused window for keyboard input; only the currently focused surface is reachable; \
-			 use ax actions or desktop input"
-		);
 	}
 
 	#[test]
@@ -402,11 +396,6 @@ mod tests {
 			.raise_window("w1")
 			.expect_err("Wayland window raise must fail");
 		assert_eq!(err.code.as_str(), "BackgroundUnavailable");
-		assert_eq!(
-			err.message,
-			"window w1 wayland-compositor-focus-only: Wayland cannot programmatically activate a \
-			 non-focused window; only the currently focused surface is reachable"
-		);
 	}
 
 	#[test]

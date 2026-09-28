@@ -39,6 +39,7 @@ import {
 import { sanitizeErrorLine } from "../chrome/error-block";
 import type { ScrollRangeAnchor } from "../components/scroll-view";
 import { formatContextUsage } from "../chrome/context-thresholds";
+import { sendHubMessage } from "./agent-hub-message";
 
 /** Parsed message and model metadata relevant to a transcript viewer. */
 export type AgentTranscriptEntry = SessionMessageEntryLike | { type: "model_change"; model: string };
@@ -551,8 +552,8 @@ export class AgentTranscriptViewer implements Component {
 			try {
 				// Revives a parked agent; returns the live session for running/idle.
 				const session = await lifecycle().ensureLive(id);
-				// Steers a mid-turn agent; sends a normal prompt to an idle one.
-				await session.prompt(trimmed, { streamingBehavior: "steer" });
+				// Commands act on the selected agent; other messages steer or prompt it.
+				await sendHubMessage(session, trimmed);
 			} catch (error) {
 				this.#notice = error instanceof Error ? error.message : String(error);
 			}

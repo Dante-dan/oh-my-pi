@@ -13,6 +13,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import { sendHubMessage } from "@oh-my-pi/pi-tui/overlays/agent-hub-message";
 import type {
 	BusChannel,
 	CollabUiRequest,
@@ -1079,7 +1080,7 @@ export class CollabHost {
 					.ensureLive(agentId)
 					.then(session => {
 						if (!this.#guestTrafficAllowed() || !this.#guestActionsReady()) return;
-						return session.prompt(trimmed, { streamingBehavior: "steer" });
+						return sendHubMessage(session, trimmed);
 					})
 					.catch(fail);
 				break;

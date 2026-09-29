@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- OpenRouter HTTP 422 errors stop immediately instead of retrying the same rejected request five times ([issue #13486](https://github.com/can1357/oh-my-pi/issues/13486)).
+- OpenRouter HTTP 422 errors stop immediately instead of retrying the same rejected request five times ([#13808](https://github.com/can1357/oh-my-pi/pull/13808) by [@Dante-dan](https://github.com/Dante-dan); [issue #13486](https://github.com/can1357/oh-my-pi/issues/13486)).
 
 ## [18.4.4] - 2026-09-29
 

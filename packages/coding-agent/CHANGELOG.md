@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed `glob` on one missing path returning a tool error; it now succeeds with no matches and reports the missing path in the notice and result metadata ([#13771](https://github.com/can1357/oh-my-pi/pull/13771) by [@Dante-dan](https://github.com/Dante-dan)).
 - Fixed `computer.window(74)` matching every open window and `computer.window({ id: 74 })` matching none; a numeric id now resolves the same window as `"74"` ([#13649](https://github.com/can1357/oh-my-pi/pull/13649) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.4.3] - 2026-09-28

@@ -12,7 +12,6 @@
  *   - `token` / `token --regenerate` — manages the gateway bearer token file.
  *   - `status` — prints the locally-stored gateway token and bind hint.
  */
-import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -33,10 +32,15 @@ import {
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { type ModelKind, modelKind } from "@oh-my-pi/pi-catalog/types";
-import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
-import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import {
+	type AuthBrokerClientConfig,
+	loadEffectiveAuthAccountPolicyConfig,
+	resolveAuthBrokerConfig,
+} from "../session/auth-broker-config";
+import { generateToken, readTokenFile, writeTokenFile } from "./token-file";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
 
@@ -69,28 +73,6 @@ function getTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-gateway.token");
 }
 
-async function readToken(): Promise<string | null> {
-	try {
-		const raw = await fs.readFile(getTokenFilePath(), "utf8");
-		const trimmed = raw.trim();
-		return trimmed.length > 0 ? trimmed : null;
-	} catch (err) {
-		if (isEnoent(err)) return null;
-		throw err;
-	}
-}
-
-async function writeToken(token: string): Promise<void> {
-	const file = getTokenFilePath();
-	await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-	await fs.writeFile(file, token, { mode: 0o600 });
-	try {
-		await fs.chmod(file, 0o600);
-	} catch {
-		// Best-effort (e.g. Windows).
-	}
-}
-
 /**
  * Atomically create the token file, refusing to clobber an existing one.
  * Returns `true` on success, `false` when the file already existed (so the
@@ -114,21 +96,17 @@ async function createTokenExclusive(token: string): Promise<boolean> {
 	return true;
 }
 
-function generateToken(): string {
-	return crypto.randomBytes(32).toString("base64url");
-}
-
 async function ensureToken(): Promise<string> {
-	const existing = await readToken();
+	const existing = await readTokenFile(getTokenFilePath());
 	if (existing) return existing;
 	const token = generateToken();
 	if (await createTokenExclusive(token)) return token;
 	// Another concurrent invocation won the create race; read what they wrote.
-	const fromRace = await readToken();
+	const fromRace = await readTokenFile(getTokenFilePath());
 	if (fromRace) return fromRace;
 	// File existed-then-disappeared between EEXIST and read; last resort, write
 	// our generated token unconditionally so callers don't see an empty string.
-	await writeToken(token);
+	await writeTokenFile(getTokenFilePath(), token);
 	return token;
 }
 
@@ -253,6 +231,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// Build a broker-backed AuthStorage — same pattern as discoverAuthStorage()
 	// in sdk.ts. The gateway never touches local SQLite.
 	const accountPool = await loadAuthBrokerAccountPool();
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -266,8 +245,10 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${brokerConfig.url}`,
+		accountPolicies,
+		defaultReservePct,
 	});
-	await storage.reload();
+	await storage.credentials.reload();
 
 	// Build the model resolver + catalog from the ModelRegistry — the same
 	// component the TUI/CLI use — scoped to providers we hold credentials for.
@@ -287,7 +268,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// advertised until restart.
 	const providersWithCreds = (): Set<string> => {
 		const providers = new Set<string>();
-		for (const entry of storage.exportSnapshot().credentials) providers.add(entry.provider);
+		for (const entry of storage.credentials.snapshot().credentials) providers.add(entry.provider);
 		return providers;
 	};
 	let modelById = new Map<string, Model<Api>>();
@@ -343,7 +324,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const credentialSync = setInterval(() => {
 		void (async () => {
 			try {
-				if (await storage.pollExternalChanges()) await rebuildCatalog(true);
+				if (await storage.credentials.poll()) await rebuildCatalog(true);
 			} catch (error) {
 				logger.warn("auth-gateway credential sync failed", {
 					error: error instanceof Error ? error.message : String(error),
@@ -395,7 +376,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 async function runToken(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	if (flags.regenerate) {
 		const next = generateToken();
-		await writeToken(next);
+		await writeTokenFile(getTokenFilePath(), next);
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify({ token: next, path: getTokenFilePath() })}\n`);
 		} else {
@@ -412,7 +393,7 @@ async function runToken(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 }
 
 async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
-	const token = await readToken();
+	const token = await readTokenFile(getTokenFilePath());
 	const brokerConfig = await resolveAuthBrokerConfig();
 	const tokenFile = getTokenFilePath();
 	if (!brokerConfig) {
@@ -543,7 +524,7 @@ const STRICT_PROBE_MAX_CANDIDATES = 4;
 const STRICT_PROBE_PER_ATTEMPT_TIMEOUT_MS = 15_000;
 
 /**
- * Overall per-credential budget passed to {@link AuthStorage.checkCredentials}.
+ * Overall per-credential budget passed to {@link AuthStorage.health.check}.
  * Big enough to walk every candidate at the per-attempt cap with a small
  * margin for refresh/network overhead.
  */
@@ -636,7 +617,7 @@ async function probeOneModel(
 
 /**
  * Build the {@link CompletionProbe} consumed by
- * {@link AuthStorage.checkCredentials} in `--strict` mode. Walks the cheapest
+ * {@link AuthStorage.health.check} in `--strict` mode. Walks the cheapest
  * candidates per provider, retrying on "model not found / invalid model"
  * errors so a stale catalog entry doesn't masquerade as a bad credential.
  * Stops as soon as one model returns a successful response (the credential
@@ -704,6 +685,7 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	}
 
 	const accountPool = await loadAuthBrokerAccountPool();
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -711,10 +693,14 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		initialSnapshot,
 		accountPool,
 	});
-	const storage = new AuthStorage(store, { sourceLabel: `broker ${brokerConfig.url}` });
+	const storage = new AuthStorage(store, {
+		sourceLabel: `broker ${brokerConfig.url}`,
+		accountPolicies,
+		defaultReservePct,
+	});
 	try {
-		await storage.reload();
-		const results = await storage.checkCredentials(
+		await storage.credentials.reload();
+		const results = await storage.health.check(
 			flags.strict
 				? { completionProbe: createStrictCompletionProbe(), completionTimeoutMs: STRICT_PROBE_OVERALL_TIMEOUT_MS }
 				: undefined,

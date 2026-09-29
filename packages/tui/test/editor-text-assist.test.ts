@@ -63,6 +63,9 @@ describe("Editor text assistance", () => {
 		const cases: Array<[keys: string[], text: string]> = [
 			[["."], "The weather."],
 			[[")"], "The weather)"],
+			[["-", "l"], "The weather-l"],
+			[[" ", "-"], "The weather -"],
+			[["\n", "i"], "The weather\ni"],
 			[[" ", "i"], "The weather i"],
 			[[" ", " "], "The weather  "],
 			[["i"], "The weather i"],

@@ -1,6 +1,6 @@
 /** Options shared by every native input helper. */
 interface ComputerInputOptions {
-	/** Omit by default: window input then never focuses the target or moves the pointer. `true` briefly activates the target and posts real input; only after a `BackgroundUnavailable` or a verified no-op. */
+	/** Omit for background input without deliberate activation or pointer movement. `true` temporarily takes control; use only after BackgroundUnavailable or a verified no-op, never to replay uncertain input. */
 	takeover?: boolean;
 }
 
@@ -42,14 +42,14 @@ interface ComputerAxQuery {
 	limit?: number;
 }
 
-/** Window filter: exact opaque `id`, or case-insensitive substrings of the owning app name and title. */
+/** Window filter: exact `id` (a number means the same id as its string), or case-insensitive substrings of the owning app name and title. */
 interface ComputerWindowFilter {
-	id?: string;
+	id?: string | number;
 	app?: string;
 	title?: string;
 }
 
-/** Rectangle in global desktop coordinates. */
+/** Rectangle in platform-native global coordinates: physical desktop pixels on Windows, logical points on macOS. */
 interface ComputerBounds {
 	x: number;
 	y: number;
@@ -71,6 +71,7 @@ interface ComputerWindowInfo extends ComputerBounds {
 interface ComputerDisplay extends ComputerBounds {
 	id: string;
 	name: string;
+	/** OS DPI scale; screenshot mapping uses the explicit desktop and pixel rectangles. */
 	scale: number;
 	pixelX: number;
 	pixelY: number;
@@ -165,8 +166,8 @@ interface ComputerWindow extends ComputerInputTarget {
 interface ComputerDesktop extends ComputerInputTarget {
 	displays(): Promise<ComputerDisplay[]>;
 	windows(filter?: ComputerWindowFilter): Promise<ComputerWindowInfo[]>;
-	/** Resolve exactly one window by opaque id or filter; ambiguous filters throw listing candidates. */
-	window(selector: string | ComputerWindowFilter): Promise<ComputerWindow>;
+	/** Resolve exactly one window by id (`"74"` or `74`) or filter; ambiguous filters throw listing candidates. */
+	window(selector: string | number | ComputerWindowFilter): Promise<ComputerWindow>;
 	focusedWindow(): Promise<ComputerWindow | null>;
 	/** Element under a global desktop coordinate. */
 	elementAt(x: number, y: number): Promise<ComputerElement | null>;

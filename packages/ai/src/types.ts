@@ -60,8 +60,7 @@ export type { AssistantMessageEventStream } from "./utils/event-stream";
 
 /**
  * Ceiling on the output-token count omp requests from any OpenAI-family endpoint
- * (openai-responses, azure/xai responses, and openai-completions). Mirrors
- * Anthropic's {@link CLAUDE_CODE_MAX_OUTPUT_TOKENS}.
+ * (openai-responses, azure/xai responses, and openai-completions).
  *
  * Catalog `maxTokens` frequently reflects a model's context window rather than a
  * given upstream's real per-request output cap. OpenRouter, for instance,
@@ -128,7 +127,9 @@ export type CacheRetention = "none" | "short" | "long";
  * values providers consume on the wire:
  *
  * - OpenAI / OpenAI-Codex: sent verbatim as the `service_tier` field
- *   (`flex`/`scale`/`priority`).
+ *   (`flex`/`scale`/`priority`/`ultrafast`). `ultrafast` is a separate
+ *   low-latency serving path: sent to the OpenAI API as-is (preview access is
+ *   per project), and to Codex only for models whose discovery advertises it.
  * - Google (Gemini API + Vertex AI): sent as the top-level `serviceTier`
  *   field (`flex`/`priority`).
  * - OpenRouter: passed through as `service_tier`; OpenRouter realizes it for
@@ -140,7 +141,7 @@ export type CacheRetention = "none" | "short" | "long";
  * Per-family scoping is expressed by {@link ServiceTierByFamily}, not by
  * scoped sentinel values — see {@link serviceTierFamily}.
  */
-export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
+export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast";
 
 /** Provider families that expose an independent service-tier knob. */
 export type ServiceTierFamily = "openai" | "anthropic" | "google";
@@ -153,7 +154,7 @@ export type ServiceTierFamily = "openai" | "anthropic" | "google";
  */
 export type ServiceTierByFamily = Partial<Record<ServiceTierFamily, ServiceTier>>;
 
-type ServiceTierModel = Pick<Model, "provider" | "api" | "identity">;
+type ServiceTierModel = Pick<Model, "provider" | "api" | "identity"> & Partial<Pick<Model, "serviceTiers">>;
 // The service-tier matrix below intentionally stays in TypeScript rather than
 // the KDL compat tree: `shouldSendServiceTier` accepts bare provider strings
 // (agent telemetry, google-shared header placement) and the stats parser
@@ -229,6 +230,15 @@ export function resolveModelServiceTier(
  * Vertex) and OpenRouter accept `flex`/`priority`; Fireworks Serverless
  * realizes only its Priority serving path. Anthropic is absent because it
  * realizes `priority` via `speed: "fast"`.
+ *
+ * Codex-backend models (`openai-codex-responses`): `ultrafast` is sent only
+ * when the model's discovered `service_tiers` lists it. `priority`/`scale`
+ * are dropped only when that list is non-empty and omits them (codex-rs
+ * `service_tier_for_request`); an empty or missing list counts as "not
+ * reported" — accounts whose `/models` lists no tiers keep `/fast` — so the
+ * provider-level answer stands. `flex` and `default` are never gated.
+ * First-party OpenAI takes `ultrafast` as-is. A bare provider string cannot
+ * carry the list, so it answers for the provider alone.
  */
 export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
@@ -236,6 +246,19 @@ export function shouldSendServiceTier(
 ): boolean {
 	if (!serviceTier || serviceTier === "auto") return false;
 	const provider = typeof target === "string" ? target : target?.provider;
+	if (
+		typeof target !== "string" &&
+		target?.api === "openai-codex-responses" &&
+		serviceTier !== "flex" &&
+		serviceTier !== "default"
+	) {
+		const advertised = target.serviceTiers;
+		if (serviceTier === "ultrafast") return advertised?.includes(serviceTier) === true;
+		if (advertised !== undefined && advertised.length > 0) return advertised.includes(serviceTier);
+	}
+	if (serviceTier === "ultrafast") {
+		return provider === "openai" || (typeof target === "string" && provider === "openai-codex");
+	}
 	if (provider === "openai" || provider === "openai-codex") return true;
 	if (provider === "openrouter") {
 		return serviceTier === "flex" || serviceTier === "scale" || serviceTier === "priority";
@@ -312,7 +335,14 @@ export function coerceServiceTierByFamily(value: unknown): ServiceTierByFamily |
 		const out: ServiceTierByFamily = {};
 		for (const family of ["openai", "anthropic", "google"] as const) {
 			const tier = src[family];
-			if (tier === "auto" || tier === "default" || tier === "flex" || tier === "scale" || tier === "priority") {
+			if (
+				tier === "auto" ||
+				tier === "default" ||
+				tier === "flex" ||
+				tier === "scale" ||
+				tier === "priority" ||
+				tier === "ultrafast"
+			) {
 				out[family] = tier;
 			}
 		}
@@ -430,20 +460,10 @@ export interface StreamOptions {
 	credentialId?: number;
 	cacheRetention?: CacheRetention;
 	/**
-	 * Keep Anthropic's 5-minute prompt cache warm across bounded idle gaps.
-	 *
-	 * This is an ownership flag, not a general provider default: exactly one
-	 * primary agent loop sharing `providerSessionState` should enable it.
-	 * Side-channel and advisor requests must leave it unset.
-	 */
-	anthropicCacheRefresh?: boolean;
-	/**
 	 * Anthropic preserved-thinking behavior when a signed block no longer matches
 	 * its conversation prefix. Binding-capable models default to `"drop_block"`.
 	 */
 	anthropicPrefixMismatchBehavior?: "drop_block" | "error";
-	/** @internal Marks a replay-only Anthropic request that must use non-streaming `max_tokens: 0`. */
-	anthropicCacheRefreshRequest?: boolean;
 	/**
 	 * Anthropic on-demand compaction (`compact-2026-09-04` beta). Sends a
 	 * top-level `compaction: { type: "summarize", instructions? }` request; the

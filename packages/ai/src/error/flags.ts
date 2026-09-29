@@ -550,8 +550,10 @@ function classifyText(
 		) {
 			kinds |= Flag.UsageLimit;
 		}
-		if (isTimeoutText(errorMessage)) kinds |= Flag.Transient | Flag.Timeout;
-		else if (isTransientErrorText(errorMessage)) kinds |= Flag.Transient;
+		if (!isTerminalClientErrorStatus(statusClean)) {
+			if (isTimeoutText(errorMessage)) kinds |= Flag.Transient | Flag.Timeout;
+			else if (isTransientErrorText(errorMessage)) kinds |= Flag.Transient;
+		}
 		// A stream truncation, transport-level stream drop, or forwarded Codex HTTP
 		// body-read failure may not match TRANSIENT_TRANSPORT_PATTERN. Flag it
 		// explicitly so AIError.retriable and the turn-recovery layer treat it as
@@ -847,6 +849,10 @@ export function classifyMessage(message: {
 	);
 
 	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
+	// A generic provider error can acquire Transient before its HTTP status is
+	// attached. Once the final response is known to be 422, replaying it cannot
+	// help, even if that earlier provisional bit is still present.
+	if (currentStatus === 422) kinds &= ~(Flag.Transient | Flag.Timeout);
 	// Two-phase finalization: drop stale status-inferred payload bit when final text proves token overflow (#9235).
 	if (
 		currentStatus === 413 &&

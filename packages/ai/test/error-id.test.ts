@@ -127,6 +127,32 @@ describe("error-id classification", () => {
 		}
 	});
 
+	it("does not retry an OpenRouter 422 even when its body says provider returned error", () => {
+		const assistant = message({
+			api: "openrouter",
+			provider: "openrouter",
+			model: "deepseek/deepseek-v4.1-flash",
+			errorStatus: 422,
+			errorMessage: "422 Provider returned error",
+		});
+		const id = AIError.classifyMessage(assistant);
+		expect(AIError.is(id, AIError.Flag.Transient)).toBe(false);
+		expect(AIError.retriable(id)).toBe(false);
+
+		const provisionalId = AIError.classify(new Error("Provider returned error"), "openrouter");
+		const lateStatusId = AIError.classifyMessage(
+			message({
+				api: "openrouter",
+				provider: "openrouter",
+				model: "deepseek/deepseek-v4.1-flash",
+				errorId: provisionalId,
+				errorStatus: 422,
+				errorMessage: "422 Provider returned error",
+			}),
+		);
+		expect(AIError.retriable(lateStatusId)).toBe(false);
+	});
+
 	it("keeps a truncation on a retryable 408/429 status transient + retryable", () => {
 		for (const errorStatus of [408, 429]) {
 			const id = AIError.classifyMessage(message({ errorStatus, errorMessage: "unexpected EOF" }));

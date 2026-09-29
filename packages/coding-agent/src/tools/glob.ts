@@ -206,6 +206,15 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 						})(),
 					];
 			const scopePath = multiPattern?.scopePath ?? formatScopePath(targets[0].searchPath);
+			const recordMissingSingleTarget = (): void => {
+				const missing = effectivePatterns[0] ?? scopePath;
+				missingPaths = [...missingPaths, missing];
+				// Partitioning can leave one surviving target from a multi-path call.
+				// If that target disappears before its scan, every path is missing.
+				if (normalizedPatterns.length > 1) {
+					throw new ToolError(`Path not found: ${missingPaths.join(", ")}`);
+				}
+			};
 
 			for (const target of targets) {
 				if (target.searchPath === "/") {
@@ -321,7 +330,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 				const perTarget = await Promise.all(
 					targets.map(async target => {
 						if (!(await customOps.exists(target.searchPath))) {
-							if (isSingle) missingPaths = [effectivePatterns[0] ?? scopePath];
+							if (isSingle) recordMissingSingleTarget();
 							return [] as string[];
 						}
 						if (!target.hasGlob && customOps.stat) {
@@ -370,7 +379,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 							// ENAMETOOLONG can never name a real target; surface a clean
 							// "Path not found" instead of leaking the raw errno (issue #7597).
 							if (isEnoent(err) || hasFsCode(err, "ENAMETOOLONG")) {
-								if (isSingle) missingPaths = [effectivePatterns[0] ?? scopePath];
+								if (isSingle) recordMissingSingleTarget();
 								return { target, result: [] };
 							}
 							throw err;

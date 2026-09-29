@@ -140,4 +140,16 @@ describe("multi-path tools tolerate missing entries", () => {
 
 		await expect(promise).rejects.toThrow(/Path not found.*nope.*also-nope/s);
 	});
+
+	it("find retains all missing paths if the last valid root disappears after partitioning", async () => {
+		const tool = new GlobTool(createTestSession(tempDir), {
+			stat: async () => {
+				throw Object.assign(new Error("Root disappeared"), { code: "ENOENT" });
+			},
+		});
+
+		await expect(tool.execute("find-partition-race", { path: "src/**/*.ts; tests/**/*.ts" })).rejects.toThrow(
+			/Path not found: tests\/\*\*\/\*\.ts, src\/\*\*\/\*\.ts/,
+		);
+	});
 });

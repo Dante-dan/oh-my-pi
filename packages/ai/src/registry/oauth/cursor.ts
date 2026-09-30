@@ -4,6 +4,7 @@ import type { OAuthController, OAuthCredentials } from "./types";
 
 const CURSOR_LOGIN_URL = "https://cursor.com/loginDeepControl";
 const CURSOR_POLL_URL = "https://api2.cursor.sh/auth/poll";
+const CURSOR_PROFILE_URL = "https://cursor.com/api/auth/me";
 const CURSOR_REFRESH_URL = "https://api2.cursor.sh/auth/exchange_user_api_key";
 
 const POLL_MAX_ATTEMPTS = 150;
@@ -98,11 +99,13 @@ export async function loginCursor(
 	const { accessToken, refreshToken } = await pollCursorAuth(uuid, verifier);
 
 	const expiresAt = getTokenExpiry(accessToken);
+	const identity = await fetchCursorIdentity(accessToken);
 
 	return {
 		access: accessToken,
 		refresh: refreshToken,
 		expires: expiresAt,
+		...identity,
 	};
 }
 
@@ -137,16 +140,57 @@ export async function refreshCursorToken(apiKeyOrRefreshToken: string): Promise<
 	};
 
 	const expiresAt = getTokenExpiry(data.accessToken);
+	const identity = await fetchCursorIdentity(data.accessToken);
 
 	return {
 		access: data.accessToken,
 		refresh: data.refreshToken || apiKeyOrRefreshToken,
 		expires: expiresAt,
+		...identity,
 	};
 }
 
 export async function refreshCursorHook(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-	return refreshCursorToken(credentials.refresh);
+	const refreshed = await refreshCursorToken(credentials.refresh);
+	return {
+		...credentials,
+		...refreshed,
+		email:
+			refreshed.email ??
+			(refreshed.accountId === extractCursorAccessTokenUserId(credentials.access) ? credentials.email : undefined),
+	};
+}
+
+/** Profile lookup is optional: authentication still works when Cursor's dashboard is unavailable. */
+async function fetchCursorIdentity(accessToken: string): Promise<Pick<OAuthCredentials, "email" | "accountId">> {
+	const accountId = extractCursorAccessTokenUserId(accessToken);
+	if (!accountId) return {};
+	try {
+		const response = await fetch(CURSOR_PROFILE_URL, {
+			headers: {
+				Accept: "application/json",
+				Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${accountId}::${accessToken}`)}`,
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (response.ok) {
+			const profile: unknown = await response.json();
+			if (
+				profile &&
+				typeof profile === "object" &&
+				"sub" in profile &&
+				profile.sub === accountId &&
+				"email" in profile &&
+				typeof profile.email === "string" &&
+				profile.email.trim()
+			) {
+				return { accountId, email: profile.email.trim() };
+			}
+		}
+	} catch {
+		// Keep the token's stable identity when the optional email lookup fails.
+	}
+	return { accountId };
 }
 
 function decodeCursorAccessTokenPayload(token: string): unknown | undefined {

@@ -550,7 +550,7 @@ function classifyText(
 		) {
 			kinds |= Flag.UsageLimit;
 		}
-		if (!isTerminalClientErrorStatus(statusClean)) {
+		if (statusClean !== 422) {
 			if (isTimeoutText(errorMessage)) kinds |= Flag.Transient | Flag.Timeout;
 			else if (isTransientErrorText(errorMessage)) kinds |= Flag.Transient;
 		}

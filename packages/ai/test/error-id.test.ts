@@ -153,6 +153,19 @@ describe("error-id classification", () => {
 		expect(AIError.retriable(lateStatusId)).toBe(false);
 	});
 
+	it("preserves transient-worded 400 and 403 retries before and after status arrives", () => {
+		for (const [errorStatus, errorMessage] of [
+			[400, "400 Provider returned error"],
+			[403, "403 overloaded_error"],
+		] as const) {
+			const provisionalId = AIError.classify(new Error(errorMessage));
+			const directId = AIError.classifyMessage(message({ errorStatus, errorMessage }));
+			const finalizedId = AIError.classifyMessage(message({ errorId: provisionalId, errorStatus, errorMessage }));
+			expect(AIError.retriable(directId)).toBe(true);
+			expect(AIError.retriable(finalizedId)).toBe(true);
+		}
+	});
+
 	it("keeps a truncation on a retryable 408/429 status transient + retryable", () => {
 		for (const errorStatus of [408, 429]) {
 			const id = AIError.classifyMessage(message({ errorStatus, errorMessage: "unexpected EOF" }));

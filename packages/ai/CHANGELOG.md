@@ -6,6 +6,10 @@
 
 - HTTP 422 errors with transient-sounding provider text stop immediately instead of replaying the rejected request ([#13808](https://github.com/can1357/oh-my-pi/pull/13808) by [@Dante-dan](https://github.com/Dante-dan); [issue #13486](https://github.com/can1357/oh-my-pi/issues/13486)).
 
+### Added
+
+- `AuthStorage.keys.setConfig(provider, value, { fallback: true })` registers a key that is used only when no stored OAuth or `/login` credential exists, instead of overriding them; `removeConfig`/`clearConfig` also clear these fallbacks ([#13815](https://github.com/can1357/oh-my-pi/pull/13815) by [@H4vC](https://github.com/H4vC))
+
 ## [18.4.4] - 2026-09-29
 
 ### Added

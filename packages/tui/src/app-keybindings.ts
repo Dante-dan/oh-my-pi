@@ -46,6 +46,7 @@ interface AppKeybindings {
 	"app.clipboard.copyLine": true;
 	"app.clipboard.copyPrompt": true;
 	"app.agents.hub": true;
+	"app.agent.stop": true;
 	"app.session.new": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
@@ -196,6 +197,10 @@ export const KEYBINDINGS = {
 	"app.agents.hub": {
 		defaultKeys: "alt+a",
 		description: "Open the agent hub",
+	},
+	"app.agent.stop": {
+		defaultKeys: [],
+		description: "Interrupt the focused subagent",
 	},
 	"app.session.observe": {
 		defaultKeys: "ctrl+s",

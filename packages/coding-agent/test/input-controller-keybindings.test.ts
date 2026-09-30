@@ -315,6 +315,44 @@ function dispatchEnhancedImagePaste(listeners: InputListener[], png: Uint8Array)
 }
 
 describe("InputController keybinding setup", () => {
+	it("interrupts only the focused subagent and keeps its editor draft", async () => {
+		const { ctx, editor, customHandlers, setKeybinding, spies } = await createContext();
+		setKeybinding("app.agent.stop", ["alt+x"]);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const stop = customHandlers.get("alt+x")!;
+		stop();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		const subagentAbort = vi.fn(async () => {});
+		Object.defineProperty(ctx, "focusedAgentId", { value: "worker", configurable: true });
+		Object.defineProperty(ctx, "viewSession", { value: { abort: subagentAbort }, configurable: true });
+		editor.setText("pending instruction");
+		stop();
+		await Promise.resolve();
+		expect(subagentAbort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("pending instruction");
+	});
+
+	it("reports a failed focused interrupt without an unhandled rejection", async () => {
+		const { ctx, customHandlers, setKeybinding, spies } = await createContext();
+		setKeybinding("app.agent.stop", ["alt+x"]);
+		Object.defineProperty(ctx, "focusedAgentId", { value: "worker", configurable: true });
+		Object.defineProperty(ctx, "viewSession", {
+			value: {
+				abort: vi.fn(async () => {
+					throw new Error("abort failed");
+				}),
+			},
+			configurable: true,
+		});
+		new InputController(ctx).setupKeyHandlers();
+		customHandlers.get("alt+x")!();
+		await Promise.resolve();
+		expect(spies.showError).toHaveBeenCalledWith("Failed to interrupt subagent: abort failed");
+	});
+
 	it("registers model selector and display reset actions separately", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const controller = new InputController(ctx);

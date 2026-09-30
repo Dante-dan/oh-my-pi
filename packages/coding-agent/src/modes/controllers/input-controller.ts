@@ -688,6 +688,16 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.agent.stop")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => {
+				if (!this.ctx.focusedAgentId) return;
+				void this.ctx.viewSession.abort({ reason: USER_INTERRUPT_LABEL }).catch(error => {
+					this.ctx.showError(
+						`Failed to interrupt subagent: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
+			});
+		}
 		const hubKeys = new Set([
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),

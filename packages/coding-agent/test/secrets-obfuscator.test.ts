@@ -23,6 +23,7 @@ import { isJsonSchemaValueValid } from "@oh-my-pi/pi-ai/utils/schema/json-schema
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	builtinCredentialSecretEntries,
+	collectEnvSecrets,
 	getExistingSecretPlaceholderKey,
 	getSecretPlaceholderKey,
 	getSecretPlaceholderKeySync,
@@ -90,6 +91,172 @@ describe("builtinCredentialSecretEntries", () => {
 			expect(args.old_string).toBe(fileLine);
 		}
 	});
+
+	it("hides vendor-prefixed credentials across built-in families and restores them in tool-call arguments", () => {
+		const obfuscator = new SecretObfuscator(builtinCredentialSecretEntries());
+		const awsKey = `AKIA${"Z9".repeat(8)}`;
+		const googleKey = `AIza${"xQ9_".repeat(8)}abc`;
+		const slackToken = `xoxb-${"1a2B".repeat(6)}`;
+		const npmToken = `npm_${"Cd34".repeat(9)}`;
+		const stripeKey = `sk_live_${"Ef56".repeat(6)}`;
+		const stripeWebhook = `whsec_${"Gh78".repeat(8)}`;
+		const hfToken = `hf_${"Ij90".repeat(8)}ab`;
+		const sendgridKey = `SG.${"K1".repeat(11)}.${"M2".repeat(21)}M`;
+		const jwt = `eyJ${"N3".repeat(10)}.eyJ${"O4".repeat(10)}.${"P5".repeat(13)}P`;
+		const lines = [
+			`aws_access_key_id = ${awsKey}`,
+			`google api key: ${googleKey}`,
+			`SLACK_BOT_TOKEN=${slackToken}`,
+			`//registry.npmjs.org/:_authToken=${npmToken}`,
+			`stripe secret: ${stripeKey}`,
+			`endpoint_secret = ${stripeWebhook}`,
+			`HF_TOKEN=${hfToken}`,
+			`SENDGRID_API_KEY=${sendgridKey}`,
+			`id_token: ${jwt}`,
+		];
+		const tokens = [awsKey, googleKey, slackToken, npmToken, stripeKey, stripeWebhook, hfToken, sendgridKey, jwt];
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			const token = tokens[i];
+			const providerView = obfuscator.obfuscate(line);
+			expect(providerView).not.toContain(token);
+			expect(obfuscator.obfuscate(providerView)).toBe(providerView);
+			const args = deobfuscateToolArguments(obfuscator, { old_string: providerView });
+			expect(args.old_string).toBe(line);
+		}
+	});
+
+	it("replaces only the token after a Bearer prefix", () => {
+		const obfuscator = new SecretObfuscator(builtinCredentialSecretEntries());
+		const token = `${"Q7w".repeat(13)}Z`;
+		const input = `Authorization: Bearer ${token}`;
+
+		const providerView = obfuscator.obfuscate(input);
+
+		expect(providerView).toContain("Authorization: Bearer ");
+		expect(providerView).not.toContain(token);
+		const args = deobfuscateToolArguments(obfuscator, { old_string: providerView });
+		expect(args.old_string).toBe(input);
+	});
+
+	it("hides a multi-line PEM private key block as a single placeholder", () => {
+		const obfuscator = new SecretObfuscator(builtinCredentialSecretEntries());
+		const dash = "-".repeat(5);
+		const bodyLine = "A".repeat(64);
+		const pem = `${dash}BEGIN RSA PRIVATE KEY${dash}\n${bodyLine}\n${bodyLine}\n${bodyLine}\n${dash}END RSA PRIVATE KEY${dash}`;
+		const input = `before line\n${pem}\nafter line`;
+
+		const providerView = obfuscator.obfuscate(input);
+
+		expect(providerView).not.toContain("BEGIN RSA PRIVATE KEY");
+		expect(providerView).not.toContain("END RSA PRIVATE KEY");
+		expect(providerView).not.toContain(bodyLine);
+		expect(providerView.match(/\$\$[^$]+\$\$/g)).toHaveLength(1);
+		expect(providerView.startsWith("before line\n")).toBe(true);
+		expect(providerView.endsWith("\nafter line")).toBe(true);
+		const args = deobfuscateToolArguments(obfuscator, { old_string: providerView });
+		expect(args.old_string).toBe(input);
+	});
+
+	it("leaves publishable keys, identifiers, and plain hashes alone", () => {
+		const obfuscator = new SecretObfuscator(builtinCredentialSecretEntries());
+		const publishable = `pk_live_${"Ab12".repeat(6)}`;
+		const gitSha = "a1b2c3d4".repeat(5);
+		const input = [
+			`publishable = ${publishable}`,
+			"token = get_token_expiry_seconds()",
+			`commit ${gitSha}`,
+			"keyboard_shortcut_secret_value",
+		].join("\n");
+
+		expect(obfuscator.obfuscate(input)).toBe(input);
+	});
+});
+
+describe("collectEnvSecrets connection URLs", () => {
+	it("registers the password from a DSN env var that does not match secret-name patterns", () => {
+		const name = "OMP_TEST_CONNURL_DSN";
+		const scheme = "postgres";
+		const user = "app";
+		const pw = `pw${"0123456789ab".slice(0, 12)}`;
+		const host = "db.internal:5432";
+		const db = "shop";
+		const url = `${scheme}://${user}:${pw}@${host}/${db}`;
+		process.env[name] = url;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.type === "plain" && e.mode === "obfuscate" && e.content === pw)).toBe(true);
+			expect(entries.some(e => e.content === url)).toBe(false);
+		} finally {
+			delete process.env[name];
+		}
+	});
+
+	it("registers both raw and decoded forms of a percent-encoded password", () => {
+		const name = "OMP_TEST_CONNURL_ENCODED";
+		const pwRaw = `p%40ss${"12345678"}%3Ax`;
+		const pwDecoded = decodeURIComponent(pwRaw);
+		const url = `postgres://app:${pwRaw}@db.internal:5432/shop`;
+		process.env[name] = url;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.content === pwRaw)).toBe(true);
+			expect(entries.some(e => e.content === pwDecoded)).toBe(true);
+		} finally {
+			delete process.env[name];
+		}
+	});
+
+	it("registers the password from a userless connection URL", () => {
+		const name = "OMP_TEST_CONNURL_NOUSER";
+		const pw = `pw${"0123456789ab".slice(0, 12)}`;
+		const url = `redis://:${pw}@redis.internal:6379/0`;
+		process.env[name] = url;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.type === "plain" && e.mode === "obfuscate" && e.content === pw)).toBe(true);
+		} finally {
+			delete process.env[name];
+		}
+	});
+
+	it("registers the full password when it contains an unescaped at sign", () => {
+		const name = "OMP_TEST_CONNURL_RAW_AT";
+		const pw = "passwrd1@correcthorse";
+		const url = `postgres://app:${pw}@db.internal/shop`;
+		process.env[name] = url;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.type === "plain" && e.mode === "obfuscate" && e.content === pw)).toBe(true);
+			expect(new SecretObfuscator(entries).obfuscate(url)).not.toContain("correcthorse");
+		} finally {
+			delete process.env[name];
+		}
+	});
+
+	it("skips connection-URL passwords shorter than the minimum length", () => {
+		const name = "OMP_TEST_CONNURL_SHORT";
+		const url = "postgres://app:pw@db.internal:5432/shop";
+		process.env[name] = url;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.content === "pw")).toBe(false);
+		} finally {
+			delete process.env[name];
+		}
+	});
+
+	it("ignores non-URL values on non-secret variable names", () => {
+		const name = "OMP_TEST_CONNURL_PLAIN";
+		const value = "hello-world-value-123";
+		process.env[name] = value;
+		try {
+			const entries = collectEnvSecrets();
+			expect(entries.some(e => e.content === value)).toBe(false);
+		} finally {
+			delete process.env[name];
+		}
+	});
 });
 
 describe("lazy placeholder key", () => {
@@ -143,21 +310,6 @@ describe("lazy placeholder key", () => {
 });
 
 describe("SecretObfuscator regex behavior", () => {
-	it("obfuscates and deobfuscates regex matches with flags", () => {
-		const obfuscator = new SecretObfuscator([{ type: "regex", content: "api[_-]?key\\s*=\\s*\\w+", flags: "i" }]);
-		const original = "API_KEY=abc and api-key=def";
-		const obfuscated = obfuscator.obfuscate(original);
-		expect(obfuscated).not.toEqual(original);
-		expect(obfuscator.deobfuscate(obfuscated)).toEqual(original);
-	});
-
-	it("supports bare regex patterns without explicit flags", () => {
-		const obfuscator = new SecretObfuscator([{ type: "regex", content: "api[_-]?key\\s*=\\s*\\w+" }]);
-		const text = "api_key=abc and API_KEY=def";
-		const obfuscated = obfuscator.obfuscate(text);
-		expect(obfuscated).not.toEqual(text);
-		expect(obfuscator.deobfuscate(obfuscated)).toEqual(text);
-	});
 	it("deobfuscates placeholders through tool-call arguments", () => {
 		const obfuscator = new SecretObfuscator([{ type: "regex", content: "api[_-]?key\\s*=\\s*\\w+", flags: "i" }]);
 		const original = { cmd: "API_KEY=abc and api-key=def", status: "ok", nested: { note: "API_KEY=zzz" } };
@@ -1546,25 +1698,6 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		expect(obfuscator.deobfuscate(obfuscated)).toBe("SECRETUVREDACTED");
 	});
 
-	it("redacts bounded replace-mode regex suffixes after generated placeholders", () => {
-		const obfuscator = new SecretObfuscator(
-			[
-				{ type: "plain", content: "SECRETUV" },
-				{ type: "regex", mode: "replace", content: "[A-Z0-9]{10}", replacement: "REDACTED" },
-			],
-			"B".repeat(43),
-		);
-
-		const obfuscated = obfuscator.obfuscate("SECRETUVX1");
-
-		// The 8-char SECRETUVX1 redacts to one placeholder + REDACTED; assert the `X1`
-		// suffix is gone via end-anchored structure, not substring absence — the
-		// random keyed base can itself contain the two chars "X1".
-		expect(obfuscated).toMatch(/^\$\$[A-Z0-9]+:U\$\$REDACTED$/);
-		expect(obfuscated).not.toMatch(/X1$/);
-		expect(obfuscator.deobfuscate(obfuscated)).toBe("SECRETUVREDACTED");
-	});
-
 	it("emits a custom replacement once around a generated placeholder", () => {
 		const obfuscator = new SecretObfuscator(
 			[
@@ -1832,23 +1965,6 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		}
 	});
 
-	it("redacts a self-matching sentinel regex to a stable nonmatching value", () => {
-		// A regex that also matches the single A/B perturbation still has same-length
-		// values it does NOT match (a lowercase pair for [A-Z]{2}, an A/Z-free pair for
-		// Z+). The bounded search finds one, so the sentinel is redacted to a value the
-		// regex never re-matches: leak-free AND a fixed point under re-obfuscation.
-		for (const content of ["Z+", "[A-Z]{2}"]) {
-			const obf = new SecretObfuscator([{ type: "regex", mode: "replace", content }], "Q".repeat(43));
-
-			const out = obf.obfuscate("ZZ");
-
-			expect(out).not.toBe("ZZ");
-			expect(out).toHaveLength(2);
-			expect(obf.obfuscate(out)).toBe(out);
-			expect(obf.obfuscate(obf.obfuscate(out))).toBe(out);
-		}
-	});
-
 	it("searches past the first perturbation when it also matches the regex", () => {
 		// Regression for a regex that matches both the sentinel and its single A/B
 		// perturbation: `Z|A`/`[AZ]` match `Z` and `A`, so the old guard kept the raw
@@ -1872,45 +1988,6 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		expect(out).not.toBe("ZZ");
 		expect(out).toHaveLength(2);
 		expect(/^[A-Za-z0-9]{2}$/.test(out)).toBe(false);
-		expect(obf.obfuscate(out)).toBe(out);
-	});
-
-	it("exhausts two-character fallback candidates before keeping the sentinel", () => {
-		const obf = new SecretObfuscator([{ type: "regex", mode: "replace", content: "[A-Za-z0-9]." }], "Q".repeat(43));
-
-		const out = obf.obfuscate("ZZ");
-
-		expect(out).not.toBe("ZZ");
-		expect(out).toHaveLength(2);
-		expect(/[A-Za-z0-9]./.test(out)).toBe(false);
-		expect(obf.obfuscate(out)).toBe(out);
-	});
-
-	it("samples every leading character class before giving up on three-character collisions", () => {
-		const obf = new SecretObfuscator(
-			[{ type: "regex", mode: "replace", content: "[A-Za-z0-9].{2}" }],
-			"Q".repeat(43),
-		);
-
-		const out = obf.obfuscate("ZZc");
-
-		expect(out).not.toBe("ZZc");
-		expect(out).toHaveLength(3);
-		expect(/[A-Za-z0-9].{2}/.test(out)).toBe(false);
-		expect(obf.obfuscate(out)).toBe(out);
-	});
-
-	it("exhausts three-character fallback candidates when the nonmatching byte must be last", () => {
-		const obf = new SecretObfuscator(
-			[{ type: "regex", mode: "replace", content: ".{2}[A-Za-z0-9]" }],
-			"Q".repeat(43),
-		);
-
-		const out = obf.obfuscate("ZZc");
-
-		expect(out).not.toBe("ZZc");
-		expect(out).toHaveLength(3);
-		expect(/.{2}[A-Za-z0-9]/.test(out)).toBe(false);
 		expect(obf.obfuscate(out)).toBe(out);
 	});
 

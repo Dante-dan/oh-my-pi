@@ -53,6 +53,8 @@ function assistantStopMessage(text: string): AssistantMessage {
 
 interface SessionHarness {
 	session: AgentSession;
+	/** Resolves when the executor has dispatched the session's prompt. */
+	promptEntered: Promise<void>;
 	/** Emit a successful terminal `yield` tool result through the session event stream. */
 	emitTerminalYield: (data: unknown) => void;
 	/** The observer factory installed by {@link attachIrcWakeTurnMonitor}, if any. */
@@ -67,9 +69,11 @@ interface SessionHarness {
  * `subscribeRunState` never fires — the run-state mirror omits `idle`, which is
  * exactly the leak the acceptance boundary must cover.
  */
-function createHarness(): SessionHarness {
+function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: AsyncJobManager }): SessionHarness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
+	const promptEntered = Promise.withResolvers<void>();
+	const hangingPrompt = Promise.withResolvers<void>();
 	let yieldSeq = 0;
 	let wakeObserver: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined;
 	const emit = (event: AgentSessionEvent) => {
@@ -107,10 +111,16 @@ function createHarness(): SessionHarness {
 			};
 		},
 		prompt: async (text: string) => {
+			promptEntered.resolve();
+			if (options?.hangPrompt) {
+				await hangingPrompt.promise;
+				return true;
+			}
 			const message = assistantStopMessage("submitting");
 			messages.push(message);
 			emit({ type: "message_end", message } as AgentSessionEvent);
 			emitTerminalYield({ report: text });
+			return true;
 		},
 		waitForIdle: async () => {},
 		isAdvisorActive: () => false,
@@ -129,9 +139,11 @@ function createHarness(): SessionHarness {
 		},
 		trackIrcReply: () => {},
 		subscribeRunState: () => () => {},
+		asyncJobManager: options?.asyncJobManager,
 	};
 	return {
 		session: session as unknown as AgentSession,
+		promptEntered: promptEntered.promise,
 		emitTerminalYield,
 		wakeObserver: () => wakeObserver,
 	};
@@ -145,6 +157,10 @@ function registerRunning(session: AgentSession) {
 		session,
 		status: "running",
 	});
+}
+
+async function flushMicrotasks(): Promise<void> {
+	for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 }
 
 describe("runSubprocess result acceptance", () => {
@@ -187,6 +203,53 @@ describe("runSubprocess result acceptance", () => {
 		expect(AgentRegistry.global().staleAcceptedRuns()).toEqual([]);
 		// Launch milestone is the registration timestamp the acceptance must not move.
 		expect(settled?.createdAt).toBe(ref.createdAt);
+	});
+
+	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {
+		const harness = createHarness({ hangPrompt: true });
+		const ref = registerRunning(harness.session);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: harness.session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} as CreateAgentSessionResult);
+		const delivered = Promise.withResolvers<{ id: string; text: string }>();
+		const manager = new AsyncJobManager({
+			onJobComplete: (id, text) => delivered.resolve({ id, text }),
+		});
+		const jobId = manager.register("task", AGENT_ID, async ({ signal }) => {
+			const result = await runSubprocess({
+				cwd: "/tmp",
+				agent: baseAgent,
+				task: "do the work",
+				index: 0,
+				id: AGENT_ID,
+				signal,
+			});
+			if (result.exitCode !== 0) throw new Error(result.abortReason ?? result.error ?? "Task failed");
+			return result.output;
+		});
+
+		try {
+			await harness.promptEntered;
+			await harness.session.abort();
+			await AgentLifecycleManager.global().release(AGENT_ID, ref, { tombstone: true });
+
+			const job = manager.getJob(jobId);
+			expect(job).toBeDefined();
+			await flushMicrotasks();
+			const settlement = job!.status === "running" ? ("still-running" as const) : ("settled" as const);
+			if (settlement === "still-running") manager.cancel(jobId);
+			await job!.promise;
+
+			expect(settlement).toBe("settled");
+			expect(job!.status).toBe("failed");
+			expect(await delivered.promise).toMatchObject({ id: jobId });
+		} finally {
+			manager.cancel(jobId);
+			await manager.dispose({ timeoutMs: 1000 });
+		}
 	});
 
 	it("terminalizes an existing ref on a follow-up turn whose run-state mirror omits idle", async () => {
@@ -233,5 +296,53 @@ describe("runSubprocess result acceptance", () => {
 		expect(settled?.lifecycle?.responseAt).toBeNumber();
 		expect(settled?.lifecycle?.acceptedAt).toBeNumber();
 		expect(settled?.lifecycle?.terminalAt).toBeNumber();
+	});
+
+	it("delivers every yield of a woken agent to its parent as a job completion", async () => {
+		const manager = new AsyncJobManager({});
+		const delivered: string[] = [];
+		manager.registerDeliverySink("Parent", (_jobId, text) => {
+			delivered.push(text);
+		});
+		const harness = createHarness({ asyncJobManager: manager });
+		AgentRegistry.global().register({
+			id: AGENT_ID,
+			displayName: AGENT_ID,
+			kind: "sub",
+			parentId: "Parent",
+			session: harness.session,
+			status: "idle",
+		});
+		attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent });
+		const observer = harness.wakeObserver();
+		if (!observer) throw new Error("wake-turn observer was not registered");
+
+		try {
+			for (const report of ["followup-done", "broadcast-ok"]) {
+				const finish = observer([
+					{
+						role: "custom",
+						customType: "irc:incoming",
+						content: "follow up",
+						display: false,
+						details: { id: `msg-${report}`, from: "Parent", message: "follow up" },
+						attribution: "agent",
+						timestamp: Date.now(),
+					} as unknown as AgentMessage,
+				]);
+				harness.emitTerminalYield({ report });
+				// Pending from acceptance until finalization: the parent's `wait` can block on it.
+				expect(manager.getRunningJobs({ ownerId: "Parent" }).map(job => job.agentId)).toEqual([AGENT_ID]);
+				await finish?.(undefined);
+				await manager.waitForAll();
+				await manager.drainDeliveries({ timeoutMs: 1000 });
+			}
+
+			expect(delivered).toHaveLength(2);
+			expect(delivered[0]).toContain("followup-done");
+			expect(delivered[1]).toContain("broadcast-ok");
+		} finally {
+			await manager.dispose({ timeoutMs: 1000 });
+		}
 	});
 });

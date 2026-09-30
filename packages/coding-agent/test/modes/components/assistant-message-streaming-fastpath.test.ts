@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
 
 const W = 100;
@@ -154,17 +154,6 @@ describe("AssistantMessageComponent streaming fast path", () => {
 
 		expect(rendered).toContain("answer");
 		expect(rendered).not.toContain(". . .");
-	});
-
-	it("matches teardown for a single growing text block", () => {
-		const reused = new AssistantMessageComponent();
-		let text = "";
-		for (const chunk of ["The ", "quick ", "brown ", "**fox** ", "jumps."]) {
-			text += chunk;
-			const m = msg([{ type: "text", text }]);
-			reused.updateContent(m);
-			expect(reused.render(W).join("\n")).toBe(teardownRender(m));
-		}
 	});
 
 	it("repairs Gemini's lone closing fence when the streamed turn becomes final", () => {

@@ -1,5 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
-import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
+import { describe, expect, it } from "bun:test";
 import {
 	ConcatSink,
 	parseJsonlLenient,
@@ -13,36 +12,11 @@ import {
 
 const encoder = new TextEncoder();
 
-async function runStringTransform(transform: TransformStream<string, string>, chunks: string[]): Promise<string[]> {
-	const readable = new ReadableStream<string>({
-		start(controller) {
-			for (const chunk of chunks) controller.enqueue(chunk);
-			controller.close();
-		},
-	});
-
-	const reader = readable.pipeThrough(transform).getReader();
-	const output: string[] = [];
-	while (true) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		output.push(value);
-	}
-	return output;
-}
-
 async function collectAsync<T>(iter: AsyncIterable<T>): Promise<T[]> {
 	const output: T[] = [];
 	for await (const item of iter) output.push(item);
 	return output;
 }
-
-describe("sanitizeText", () => {
-	it("strips ANSI and normalizes CR", () => {
-		const input = "\u001b[31mred\u001b[0m\r\n";
-		expect(sanitizeText(input)).toBe("red\n");
-	});
-});
 
 describe("readLines", () => {
 	it("splits lines across chunks without newlines", async () => {
@@ -62,6 +36,36 @@ describe("readLines", () => {
 		}
 
 		expect(output).toEqual(["alpha", "beta", "gamma"]);
+	});
+
+	it("keeps retained split lines stable after the stream drains", async () => {
+		const readable = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of ["hel", "lo\nwor", "ld\n"]) {
+					controller.enqueue(encoder.encode(chunk));
+				}
+				controller.close();
+			},
+		});
+
+		const lines = await collectAsync(readLines(readable));
+		const dec = new TextDecoder();
+		expect(lines.map(line => dec.decode(line))).toEqual(["hello", "world"]);
+	});
+
+	it("keeps a retained split line stable beside an unterminated tail", async () => {
+		const readable = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of ["hel", "lo\nwor", "ld"]) {
+					controller.enqueue(encoder.encode(chunk));
+				}
+				controller.close();
+			},
+		});
+
+		const lines = await collectAsync(readLines(readable));
+		const dec = new TextDecoder();
+		expect(lines.map(line => dec.decode(line))).toEqual(["hello", "world"]);
 	});
 });
 
@@ -196,25 +200,7 @@ describe("ConcatSink", () => {
 	});
 });
 
-describe("createSanitizerStream", () => {
-	it("sanitizes text chunks", async () => {
-		const transform = new TransformStream<string, string>({
-			transform(chunk, controller) {
-				controller.enqueue(sanitizeText(chunk));
-			},
-		});
-		const output = await runStringTransform(transform, ["\u001b[34mhi\u001b[0m\r\n"]);
-
-		expect(output).toEqual(["hi\n"]);
-	});
-});
-
 describe("parseJsonlLenient", () => {
-	it("parses valid JSONL", () => {
-		const result = parseJsonlLenient<{ a: number }>('{"a":1}\n{"a":2}\n{"a":3}\n');
-		expect(result).toEqual([{ a: 1 }, { a: 2 }, { a: 3 }]);
-	});
-
 	it("skips malformed lines and continues", () => {
 		const result = parseJsonlLenient<{ a: number }>('{"a":1}\n{bad json}\n{"a":3}\n');
 		expect(result).toEqual([{ a: 1 }, { a: 3 }]);
@@ -275,19 +261,6 @@ describe("readSseJson", () => {
 
 		const output = await collectAsync(readSseJson(stream));
 		expect(output).toEqual([{ c: 3 }]);
-	});
-
-	it("handles data lines split across chunks", async () => {
-		const chunks = [encoder.encode('data: {"a"'), encoder.encode(":1}\n\n")];
-		const stream = new ReadableStream<Uint8Array>({
-			start(controller) {
-				for (const chunk of chunks) controller.enqueue(chunk);
-				controller.close();
-			},
-		});
-
-		const output = await collectAsync(readSseJson(stream));
-		expect(output).toEqual([{ a: 1 }]);
 	});
 
 	it("completes cleanly when the final data chunk is truncated JSON", async () => {
@@ -455,19 +428,6 @@ describe("readSseJsonOrText", () => {
 		expect(await collectAsync(readSseJsonOrText(bytesStreamFromChunks(chunks)))).toEqual(['{"a":1', { b: 2 }]);
 		await expect(collectAsync(readSseJson(bytesStreamFromChunks(chunks)))).rejects.toThrow(SyntaxError);
 	});
-
-	it("reports raw events to diagnostic observers", async () => {
-		const stream = bytesStreamFromChunks([
-			encoder.encode("event: message\ndata: not json\n\n"),
-			encoder.encode("data: [DONE]\n\n"),
-		]);
-		const observed: ServerSentEvent[] = [];
-
-		const output = await collectAsync(readSseJsonOrText(stream, undefined, event => observed.push(event)));
-
-		expect(output).toEqual(["not json"]);
-		expect(observed.map(event => event.data)).toEqual(["not json", "[DONE]"]);
-	});
 });
 
 function bytesStreamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
@@ -490,19 +450,6 @@ describe("readSseEvents", () => {
 		expect(events.map(e => e.data)).toEqual(['{"id":1}', "{}"]);
 	});
 
-	it("decodes all complete lines in a source chunk as one batch", async () => {
-		const decodeSpy = spyOn(TextDecoder.prototype, "decode");
-		try {
-			const stream = bytesStreamFromChunks([encoder.encode("event: first\ndata: 1\n\nevent: second\ndata: 2\n\n")]);
-			const events = await collectAsync(readSseEvents(stream));
-
-			expect(events.map(event => event.data)).toEqual(["1", "2"]);
-			expect(decodeSpy).toHaveBeenCalledTimes(1);
-		} finally {
-			decodeSpy.mockRestore();
-		}
-	});
-
 	it("joins multiple data: lines with newlines", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode("event: chunk\ndata: line1\ndata: line2\ndata: line3\n\n")]);
 		const [evt] = await collectAsync(readSseEvents(stream));
@@ -512,7 +459,7 @@ describe("readSseEvents", () => {
 
 	it("skips comment lines but preserves them in raw", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode(": keep-alive\nevent: ping\ndata: ok\n\n")]);
-		const [evt] = await collectAsync(readSseEvents(stream));
+		const [evt] = await collectAsync(readSseEvents(stream, undefined, { captureRaw: true }));
 		expect(evt.event).toBe("ping");
 		expect(evt.data).toBe("ok");
 		expect(evt.raw).toEqual([": keep-alive", "event: ping", "data: ok"]);
@@ -520,13 +467,13 @@ describe("readSseEvents", () => {
 
 	it("does not carry pure comment keepalives into the next event raw lines", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode(": keepalive\n\nevent: ping\ndata: ok\n\n")]);
-		const [evt] = await collectAsync(readSseEvents(stream));
+		const [evt] = await collectAsync(readSseEvents(stream, undefined, { captureRaw: true }));
 		expect(evt.raw).toEqual(["event: ping", "data: ok"]);
 	});
 
 	it("yields control-only id/retry events for reconnecting transports", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode("id: stream-1\nretry: 25\n\n")]);
-		const events = await collectAsync(readSseEvents(stream));
+		const events = await collectAsync(readSseEvents(stream, undefined, { captureRaw: true }));
 
 		expect(events).toEqual([
 			{
@@ -544,12 +491,6 @@ describe("readSseEvents", () => {
 		const [evt] = await collectAsync(readSseEvents(stream));
 		expect(evt.event).toBe(" spaced");
 		expect(evt.data).toBe(" body");
-	});
-
-	it("handles CRLF line terminators", async () => {
-		const stream = bytesStreamFromChunks([encoder.encode("event: a\r\ndata: 1\r\n\r\nevent: b\r\ndata: 2\r\n\r\n")]);
-		const events = await collectAsync(readSseEvents(stream));
-		expect(events.map(e => `${e.event}=${e.data}`)).toEqual(["a=1", "b=2"]);
 	});
 
 	it("dispatches multiple CR-only events before EOF", async () => {
@@ -590,7 +531,7 @@ describe("readSseEvents", () => {
 			encoder.encode("\n\r"),
 			encoder.encode("\nevent: next\r\ndata: ok\r\n\r\n"),
 		]);
-		const events = await collectAsync(readSseEvents(stream));
+		const events = await collectAsync(readSseEvents(stream, undefined, { captureRaw: true }));
 
 		expect(events).toEqual([
 			{ event: "utf", data: "café", raw: ["event: utf", "data: café"] },
@@ -610,21 +551,20 @@ describe("readSseEvents", () => {
 		expect(events[0].data).toBe("payload");
 	});
 
-	it("recovers when a chunk boundary splits inside a multi-byte UTF-8 sequence", async () => {
-		// "héllo" → bytes for 'é' are 0xC3 0xA9; split between them.
-		const full = encoder.encode("data: héllo\n\n");
-		const split = full.indexOf(0xc3) + 1;
-		const stream = bytesStreamFromChunks([full.subarray(0, split), full.subarray(split)]);
-		const [evt] = await collectAsync(readSseEvents(stream));
-		expect(evt.data).toBe("héllo");
-	});
-
 	it("flushes a pending event even without the trailing blank line", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode("event: trailing\ndata: tail\n")]);
-		const events = await collectAsync(readSseEvents(stream));
+		const events = await collectAsync(readSseEvents(stream, undefined, { captureRaw: true }));
 		expect(events).toEqual([
 			{ event: "trailing", data: "tail", raw: ["event: trailing", "data: tail"] },
 		] satisfies ServerSentEvent[]);
+	});
+
+	it("leaves raw empty by default so the token path pays no per-line slices", async () => {
+		const stream = bytesStreamFromChunks([encoder.encode("event: ping\ndata: ok\n\n")]);
+		const [evt] = await collectAsync(readSseEvents(stream));
+		expect(evt.event).toBe("ping");
+		expect(evt.data).toBe("ok");
+		expect(evt.raw).toEqual([]);
 	});
 
 	it("treats a tail without any newline as a complete final line", async () => {

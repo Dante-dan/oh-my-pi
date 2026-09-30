@@ -28,7 +28,8 @@ import { pluginUsesClaudeModelDialect } from "../discovery/agent-plugin-format";
 import { listClaudePluginRoots } from "../discovery/helpers";
 import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
 import { loadBundledAgents, parseAgent } from "./agents";
-import type { AgentDefinition, AgentSource } from "./types";
+import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
+import type { AgentDefinition } from "./types";
 
 const TASK_AGENT_CONFIG_SOURCE = ".omp";
 
@@ -36,6 +37,8 @@ const TASK_AGENT_CONFIG_SOURCE = ".omp";
 export interface DiscoveryResult {
 	agents: AgentDefinition[];
 	projectAgentsDir: string | null;
+	/** Agent directories searched, in precedence order (for "unknown agent" diagnostics). */
+	searchedDirs?: string[];
 }
 
 interface AgentDirectory {
@@ -166,7 +169,11 @@ export async function discoverAgents(
 
 	const projectAgentsDir = projectDirs.length > 0 ? projectDirs[0].path : null;
 
-	return { agents: [...loadedAgents, ...bundledAgents], projectAgentsDir };
+	return {
+		agents: [...loadedAgents, ...bundledAgents],
+		projectAgentsDir,
+		searchedDirs: orderedDirs.map(entry => entry.dir),
+	};
 }
 
 /**

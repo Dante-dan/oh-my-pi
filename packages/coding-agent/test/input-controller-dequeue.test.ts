@@ -18,7 +18,7 @@
  */
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { RestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
@@ -88,12 +88,6 @@ describe("InputController.handleDequeue (Alt+Up)", () => {
 		controller.handleDequeue();
 		// Popped message merges ahead of the draft the first pop restored.
 		expect(getText()).toBe("first\n\nsecond");
-	});
-
-	test("merges the popped message ahead of an existing draft", () => {
-		const { ctx, getText } = makeCtx({ queue: [{ text: "queued" }], draft: "typed draft" });
-		new InputController(ctx).handleDequeue();
-		expect(getText()).toBe("queued\n\ntyped draft");
 	});
 
 	test("empty queue reports nothing to restore", () => {

@@ -38,6 +38,61 @@ async function writePackage(files: Record<string, string>): Promise<string> {
 }
 
 describe("legacy-pi in-place module loading (issue #1674)", () => {
+	it("resolves package patterns by prefix specificity before suffix length", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({
+				name: "pattern-extension",
+				type: "module",
+				imports: {
+					"#a*long": "./wrong.js",
+					"#abc*": "./prefix.js",
+					"#abc*x": "./suffix.js",
+					"#abcexact": "./exact.js",
+				},
+			}),
+			"wrong.js": 'export default "wrong";',
+			"prefix.js": 'export default "prefix";',
+			"suffix.js": 'export default "suffix";',
+			"exact.js": 'export default "exact";',
+			"node_modules/pattern-dep/package.json": JSON.stringify({
+				name: "pattern-dep",
+				type: "module",
+				exports: { "./a*long": "./wrong.js", "./abc*": "./right.js" },
+			}),
+			"node_modules/pattern-dep/wrong.js": 'export default "wrong";',
+			"node_modules/pattern-dep/right.js": 'export default "dependency";',
+			"index.ts": [
+				'export { default as prefix } from "#abclong";',
+				'export { default as suffix } from "#abctailx";',
+				'export { default as exact } from "#abcexact";',
+				'export { default as dependency } from "pattern-dep/abclong";',
+			].join("\n"),
+		});
+
+		const loaded = await loadLegacyPiModule(path.join(dir, "index.ts"));
+		assert(isRecord(loaded));
+		expect([loaded.prefix, loaded.suffix, loaded.exact, loaded.dependency]).toEqual([
+			"prefix",
+			"suffix",
+			"exact",
+			"dependency",
+		]);
+	});
+
+	it("does not fall back to a broader package pattern when the specific target is excluded", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({
+				name: "excluded-pattern-extension",
+				type: "module",
+				imports: { "#*": "./fallback.js", "#private/*": null },
+			}),
+			"fallback.js": 'export default "must not load";',
+			"index.ts": 'export { default as value } from "#private/secret";',
+		});
+
+		await expect(loadLegacyPiModule(path.join(dir, "index.ts"))).rejects.toThrow(/excluded/);
+	});
+
 	it("loads in place with ESM-to-CommonJS default, named, and require interop", async () => {
 		const dir = await writePackage({
 			"package.json": JSON.stringify({ name: "asset-ext", version: "1.0.0" }),
@@ -971,6 +1026,38 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		});
 		expect(mod.observed.text).toBe("remote output");
 		expect(mod.observed.updates).toEqual(["remote output"]);
+	});
+
+	it("runs a legacy bash spawn hook against the real tool, not only the operations override", async () => {
+		// Regression: the shim forwarded the hook's env as bash tool input, which
+		// the tool accepts only for a named service, so every agent bash call from
+		// an extension registering bash this way failed with
+		// "ready and env require a service name." The operations branch above never
+		// caught it because it bypasses the registry tool.
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "legacy-bash-spawn-ext", version: "1.0.0" }),
+			"index.ts": [
+				'import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";',
+				"const tool = createBashToolDefinition(process.cwd(), {",
+				"  spawnHook(context) {",
+				"    return { ...context, command: 'echo hooked', env: { ...context.env, SENTINEL: 'yes' } };",
+				"  },",
+				"});",
+				"const result = await tool.execute('call-1', { command: 'echo original' });",
+				"export const observed = {",
+				"  text: result.content.find(block => block.type === 'text')?.text ?? '',",
+				"  isError: result.isError === true,",
+				"};",
+				"export default function (pi) { pi.registerTool(tool); }",
+			].join("\n"),
+		});
+
+		const mod = (await loadLegacyPiModule(path.join(dir, "index.ts"))) as {
+			observed: { text: string; isError: boolean };
+		};
+
+		expect(mod.observed.isError).toBe(false);
+		expect(mod.observed.text).toContain("hooked");
 	});
 
 	it("preserves relative paths from legacy find operations", async () => {

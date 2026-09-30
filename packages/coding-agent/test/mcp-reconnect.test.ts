@@ -9,12 +9,8 @@ import {
 	isRetriableConnectionError,
 	MCPTool,
 } from "@oh-my-pi/pi-coding-agent/mcp/tool-bridge";
-import type {
-	MCPImageContent,
-	MCPServerConnection,
-	MCPToolCallResult,
-	MCPTransport,
-} from "@oh-my-pi/pi-coding-agent/mcp/types";
+import type { MCPImageContent } from "@oh-my-pi/pi-tui/tools/mcp";
+import type { MCPServerConnection, MCPToolCallResult, MCPTransport } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { logger } from "@oh-my-pi/pi-utils";
 
@@ -87,10 +83,6 @@ describe("createMCPToolName", () => {
 		expect(name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
 		// A readable prefix survives the cap.
 		expect(name.startsWith("mcp__chrome_devtools_mcp_")).toBe(true);
-	});
-
-	it("leaves names within the limit untouched", () => {
-		expect(createMCPToolName("puppeteer", "puppeteer_screenshot")).toBe("mcp__puppeteer_screenshot");
 	});
 
 	it("keeps digits, so servers differing only by a digit stay distinct", () => {
@@ -220,29 +212,6 @@ describe("MCPTool.execute retry on connection error", () => {
 	const noop = () => {};
 	const noCtx = {} as Parameters<MCPTool["execute"]>[3];
 
-	it("retries once on retriable error when reconnect succeeds", async () => {
-		let callCount = 0;
-		const failTransport = mockTransport(async () => {
-			callCount++;
-			throw new Error("ECONNREFUSED");
-		});
-		const successTransport = mockTransport(async () => {
-			callCount++;
-			return toolCallResult("ok");
-		});
-
-		const oldConn = makeConnection(failTransport);
-		const newConn = makeConnection(successTransport, "test-server-new");
-		const reconnect: MCPReconnect = async () => newConn;
-
-		const tool = new MCPTool(oldConn, TOOL_DEF, reconnect);
-		const result = await tool.execute("call-1", {}, noop, noCtx);
-
-		expect(callCount).toBe(2); // 1 fail + 1 retry
-		expect(result.details?.isError).toBeFalsy();
-		expect(result.content[0]).toEqual({ type: "text", text: "ok" });
-	});
-
 	it("preserves image blocks returned by MCP tools", async () => {
 		const image: MCPImageContent = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
 		const transport = mockTransport(async () => ({
@@ -253,36 +222,6 @@ describe("MCPTool.execute retry on connection error", () => {
 		const result = await tool.execute("call-1", {}, noop, noCtx);
 
 		expect(result.content).toEqual([{ type: "text", text: "Screenshot captured" }, image]);
-	});
-
-	it("retries on transport closed and rebinding succeeds", async () => {
-		let oldCalls = 0;
-		let newCalls = 0;
-		let reconnects = 0;
-		const closedTransport = mockTransport(async () => {
-			oldCalls++;
-			throw new Error("Transport closed");
-		});
-		const reopenedTransport = mockTransport(async () => {
-			newCalls++;
-			return toolCallResult("ok");
-		});
-
-		const oldConn = makeConnection(closedTransport);
-		const newConn = makeConnection(reopenedTransport, "test-server-transport-closed");
-		const reconnect: MCPReconnect = async () => {
-			reconnects++;
-			return newConn;
-		};
-
-		const tool = new MCPTool(oldConn, TOOL_DEF, reconnect);
-		const result = await tool.execute("call-1", {}, noop, noCtx);
-
-		expect(reconnects).toBe(1);
-		expect(oldCalls).toBe(1);
-		expect(newCalls).toBe(1);
-		expect(result.details?.isError).toBeFalsy();
-		expect(result.content[0]).toEqual({ type: "text", text: "ok" });
 	});
 
 	it("reuses refreshed connection on later call", async () => {

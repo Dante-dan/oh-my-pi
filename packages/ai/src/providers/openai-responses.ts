@@ -1,5 +1,5 @@
 import { scheduler } from "node:timers/promises";
-import { $flag, logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { $flag, logger, type ServerSentEvent, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { getEnvApiKey } from "../stream";
 import type {
@@ -9,7 +9,6 @@ import type {
 	Model,
 	OpenAICompat,
 	ProviderSessionState,
-	RawSseEvent,
 	ServiceTier,
 	StreamFunction,
 	StreamOptions,
@@ -295,6 +294,33 @@ function resetOpenAIResponsesChainState(state: OpenAIResponsesChainState): void 
 	state.lastPromptCacheBreakpointPolicy = undefined;
 }
 
+/**
+ * Drop the account-bound half of every retained `openai-responses` record in
+ * `states`: the stateful `previous_response_id` chain baselines.
+ *
+ * Chaining stores the turn server-side under the account that created it, so a
+ * baseline minted by one credential is dead weight the moment the session is
+ * switched to a sibling account — the next delta request answers
+ * `Previous response not found` and burns a turn re-learning that. Everything
+ * else this record holds describes the *deployment*, not the account
+ * (strict-tools demotion, reasoning-effort fallback, native-history-replay
+ * warmup, the chaining circuit breaker), and is deliberately preserved:
+ * re-learning an endpoint's limits on every credential switch is the cost this
+ * state exists to avoid.
+ */
+export function resetOpenAIResponsesAccountScopedState(states: Map<string, ProviderSessionState>): void {
+	for (const [key, value] of states) {
+		if (!key.startsWith(OPENAI_RESPONSES_PROVIDER_SESSION_STATE_PREFIX)) continue;
+		const state = value as OpenAIResponsesProviderSessionState;
+		for (const chain of state.chains.values()) {
+			resetOpenAIResponsesChainState(chain);
+			// The stale-failure counter tallies the previous account's 404s; a
+			// fresh account must not inherit a tripped circuit breaker.
+			chain.staleFailures = 0;
+		}
+	}
+}
+
 interface OpenAIResponsesChainedParams {
 	params: OpenAIResponsesSamplingParams;
 	/** Set iff the params carry previous_response_id (delta request). */
@@ -428,7 +454,7 @@ const streamOpenAIResponsesOnce = (
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
 		const rawSseObserver = onSseEvent
-			? (event: RawSseEvent) => {
+			? (event: ServerSentEvent) => {
 					if (!event.event && event.data && event.data !== "[DONE]") {
 						try {
 							const parsed = JSON.parse(event.data);
@@ -444,7 +470,7 @@ const streamOpenAIResponsesOnce = (
 							}
 						} catch {}
 					}
-					onSseEvent(event, model);
+					onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model);
 				}
 			: undefined;
 

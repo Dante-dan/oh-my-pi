@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "bun:test";
+import { describe, expect, it, type Mock, vi } from "bun:test";
 import type { Agent, AgentEvent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -27,7 +27,15 @@ function makeRule(scope: string): Rule {
 	};
 }
 
-function makeHost() {
+interface CoordinatorHostBundle {
+	host: TtsrCoordinatorHost;
+	emitSessionEvent: Mock<(event: AgentSessionEvent) => Promise<void>>;
+	followUp: Mock<(message: AgentMessage) => void>;
+	hasQueuedMessages: Mock<() => boolean>;
+	scheduleAgentContinue: Mock<(options: Parameters<TtsrCoordinatorHost["scheduleAgentContinue"]>[0]) => void>;
+}
+
+function makeHost(): CoordinatorHostBundle {
 	const emitSessionEvent = vi.fn(async (_event: AgentSessionEvent) => undefined);
 	const followUp = vi.fn((_message: AgentMessage) => undefined);
 	const hasQueuedMessages = vi.fn(() => true);
@@ -301,5 +309,74 @@ describe("TTSR stream buffers", () => {
 		await coordinator.checkMessageUpdate(textDelta(message, "BIDDEN"));
 
 		expect(emitSessionEvent).toHaveBeenCalledTimes(1);
+	});
+
+	it("emits one ttsr_triggered when a delta match is re-confirmed at toolcall_end (issue #12184)", async () => {
+		const { coordinator, emitSessionEvent } = coordinatorFor("tool:edit");
+		const message = assistantMessage([{ type: "toolCall", id: "call-1", name: "edit", arguments: {} }]);
+
+		coordinator.onTurnStart();
+		coordinator.onAssistantMessageStart();
+		await coordinator.checkMessageUpdate(toolDelta(message, `{"path":"src/foo.ts","input":"${CONDITION}"}`));
+		await coordinator.checkMessageUpdate(
+			update(message, {
+				type: "toolcall_end",
+				contentIndex: 0,
+				partial: message as never,
+				toolCall: {
+					type: "toolCall",
+					id: "call-1",
+					name: "edit",
+					arguments: { path: "src/foo.ts", input: CONDITION },
+				},
+			}),
+		);
+
+		const isTrigger = (event: AgentSessionEvent): boolean => event.type === "ttsr_triggered";
+		expect(emitSessionEvent.mock.calls.filter(([event]) => isTrigger(event))).toHaveLength(1);
+	});
+});
+
+/**
+ * AST rules match whole-file structure, so they run once on the finalized
+ * tool call — never per streamed delta. Awaiting native `astMatch` per delta
+ * serialized hundreds of milliseconds onto the streaming event path and
+ * wedged the loop (ui.loop-blocked on large edits).
+ */
+describe("TTSR AST deferral", () => {
+	function astRule(): Rule {
+		return {
+			name: "no-inline-cast",
+			path: "no-inline-cast.md",
+			content: "Test reminder",
+			astCondition: ["($X as { $$$BODY }).$PROP"],
+			scope: ["tool:edit(*.ts)"],
+			_source: { provider: "test", providerName: "test", path: "no-inline-cast.md", level: "project" },
+		};
+	}
+
+	function messageWithEditCall(id: string, args: Record<string, unknown>): AgentMessage {
+		return assistantMessage([{ type: "toolCall", id, name: "edit", arguments: args }]);
+	}
+
+	it("does not run AST matching on toolcall deltas", async () => {
+		const { host } = makeHost();
+		const manager = new TtsrManager({
+			enabled: true,
+			contextMode: "discard",
+			interruptMode: "never",
+			repeatMode: "after-gap",
+			repeatGap: 0,
+		});
+		expect(manager.addRule(astRule())).toBe(true);
+		const coordinator = new TtsrCoordinator(host, manager);
+		const checkAst = vi.spyOn(manager, "checkAstSnapshot");
+
+		const message = messageWithEditCall("call-1", { path: "src/foo.ts", input: "const a = 1;" });
+		coordinator.onAssistantMessageStart();
+		await coordinator.checkMessageUpdate(toolDelta(message, '{"path":"src/foo.ts"'));
+		await coordinator.checkMessageUpdate(toolDelta(message, ',"input":"const a = 1;"'));
+
+		expect(checkAst).not.toHaveBeenCalled();
 	});
 });

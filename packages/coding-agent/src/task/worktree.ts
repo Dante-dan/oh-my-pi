@@ -1,3 +1,4 @@
+import { type NestedRepoPatch } from "@oh-my-pi/pi-tui/tools/task";
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -6,10 +7,12 @@ import type { VcsCommitAuthor, VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as natives from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { formatBytes, getWorktreeDir, logger, Snowflake } from "@oh-my-pi/pi-utils";
-import type { SettingValue } from "../config/settings-schema";
+import type { SettingValueOf } from "../config/registry";
+
 import { withRepoLock } from "../utils/repo-lock";
 import { writeIsolationOwner } from "./isolation-ownership";
 import { mapWithConcurrencyLimit } from "./parallel";
+import type { cfgIsolationBackend } from "./settings";
 
 const { IsoBackendKind } = natives;
 
@@ -312,11 +315,6 @@ async function captureRepoDeltaPatch(repoDir: string, rb: RepoBaseline, objectRe
 	return diffTreeOrEmpty(objectRepo, baselineTree, currentTree);
 }
 
-export interface NestedRepoPatch {
-	relativePath: string;
-	patch: string;
-}
-
 function unquoteGitDiffPath(rawPath: string): string {
 	let value = rawPath;
 	if (value.startsWith('"') && value.endsWith('"')) {
@@ -458,7 +456,7 @@ export async function applyNestedPatches(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** User-facing backend names exposed by the `isolation.backend` setting. */
-export type IsolationBackendSetting = SettingValue<"isolation.backend">;
+export type IsolationBackendSetting = SettingValueOf<typeof cfgIsolationBackend>;
 
 /**
  * Translate an {@link IsolationBackendSetting} to the native backend hint.
@@ -707,7 +705,7 @@ async function commitPatchToBranchWorktree(
 				// it can't resolve; reset the worktree so the WIP-seeded retry
 				// starts from a clean HEAD tree.
 				await repo.reset("hard", "HEAD");
-				await applyDeltaOverBaselineWip(tmpDir, taskId, patchText, wipPatches, baselineWip);
+				await applyDeltaOverBaselineWip(tmpDir, patchText, wipPatches, baselineWip);
 			} catch (wipErr) {
 				if (!vcs.isVcsError(wipErr)) throw wipErr;
 				const stderr = wipErr.stderr.slice(0, 2000);
@@ -739,7 +737,6 @@ async function commitPatchToBranchWorktree(
  */
 async function applyDeltaOverBaselineWip(
 	tmpDir: string,
-	_taskId: string,
 	patchText: string,
 	wipPatches: readonly string[],
 	baselineWip: BaselineWipContext,

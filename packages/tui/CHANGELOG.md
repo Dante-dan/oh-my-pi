@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Keep still-running wait snapshots visible beside their turn usage when sealing or rebuilding the transcript ([#12248](https://github.com/can1357/oh-my-pi/issues/12248)).
+- Keep still-running wait snapshots visible beside their turn usage when sealing or rebuilding the transcript ([#13978](https://github.com/can1357/oh-my-pi/pull/13978) by [@Dante-dan](https://github.com/Dante-dan)); fixes [#12248](https://github.com/can1357/oh-my-pi/issues/12248).
 
 ### Added
 

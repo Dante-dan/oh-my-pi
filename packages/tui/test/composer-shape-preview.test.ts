@@ -157,6 +157,16 @@ describe("composer shape preview", () => {
 				expect(live.every(row => !row.includes("\n"))).toBe(true);
 				expect(live.map(visibleWidth)).toEqual([width, width, width, width]);
 			}
+			// A seven-row terminal gives the editor a three-row cap: leave the
+			// host's four transcript/status rows intact, keeping the separator.
+			editor.setMaxHeight(3);
+			const short = editor.render(12);
+			expect(short).toHaveLength(3);
+			expect(short.join("\n")).not.toContain("workflow");
+			expect(short[0]).toBe(short[2]);
+			expect(short[1]).toContain("second");
+			editor.setMaxHeight(4);
+			expect(editor.render(12)[0].trimEnd()).toBe("workflow");
 			const preview = renderComposerShapePreview(style.id, 80);
 			expect(preview).toHaveLength(4);
 			expect(preview[1]).toBe(preview[3]); // full-width separators surround the input

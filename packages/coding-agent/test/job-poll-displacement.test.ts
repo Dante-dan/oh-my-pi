@@ -436,6 +436,7 @@ describe("#12248 completed wait turn replay", () => {
 				toolCallId: id,
 				toolName: "wait",
 				...pollResult(["running"]),
+				isError: false,
 				timestamp: Date.now(),
 			},
 		] satisfies AgentMessage[];

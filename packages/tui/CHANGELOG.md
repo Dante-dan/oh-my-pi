@@ -4,7 +4,7 @@
 
 ### Added
 
-- Extension composer styles can render a metadata header above a separate separator row ([#13722](https://github.com/can1357/oh-my-pi/issues/13722))
+- Extension composer styles can render a metadata header above a separate separator row ([#13976](https://github.com/can1357/oh-my-pi/pull/13976) by [@Dante-dan](https://github.com/Dante-dan))
 
 - Exported `wordCompletionQuery()` so hosts outside the editor can apply the same prose gates as ghost-text word completion ([#13517](https://github.com/can1357/oh-my-pi/pull/13517) by [@andrebrait](https://github.com/andrebrait))
 

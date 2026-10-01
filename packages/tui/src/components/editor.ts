@@ -1380,7 +1380,7 @@ export class Editor implements Component, Focusable {
 		};
 
 		const topRow = style.renderTop(chromeCtx);
-		if (topRow !== undefined) result.push(topRow);
+		if (topRow !== undefined) result.push(...(typeof topRow === "string" ? [topRow] : topRow));
 
 		// Render each layout line
 		// Keep the hardware cursor at the text insertion point while autocomplete

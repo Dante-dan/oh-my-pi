@@ -203,7 +203,7 @@ function jobsRenderResult(
 	options: RenderResultOptions,
 	uiTheme: Theme,
 ): Component {
-	let jobs = result.details?.jobs ?? [];
+	const jobs = result.details?.jobs ?? [];
 	const agents = result.details?.agents ?? [];
 
 	if (jobs.length === 0 && agents.length === 0) {
@@ -212,15 +212,7 @@ function jobsRenderResult(
 		return new Text([header, formatEmptyMessage(fallback, uiTheme)].join("\n"), 0, 0);
 	}
 
-	// Agent-carrying results (jobs snapshot / empty-wait roster) are real
-	// snapshots, not displaceable waiting frames — only agentless waits
-	// collapse their still-running rows once sealed.
-	if (!options.isPartial && agents.length === 0) {
-		jobs = jobs.filter(job => job.status !== "running");
-		if (jobs.length === 0) {
-			return new Text("", 0, 0);
-		}
-	}
+	// Sealing freezes the snapshot; still-running rows remain meaningful history.
 
 	const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
 	for (const job of jobs) counts[job.status]++;
@@ -630,9 +622,9 @@ function describeJob(job: JobSnapshot): NativeNode {
 
 function describeJobsResult(
 	result: ToolRenderResult<CoordinationDetails>,
-	isPartial: boolean,
+	_isPartial: boolean,
 ): NativeToolView | undefined {
-	let jobs = result.details?.jobs ?? [];
+	const jobs = result.details?.jobs ?? [];
 	const agents = result.details?.agents ?? [];
 	if (jobs.length === 0 && agents.length === 0) {
 		return {
@@ -640,10 +632,6 @@ function describeJobsResult(
 			tone: "warning",
 			body: [text([span(plainText(resultText(result) || "No jobs to process"), "dim")])],
 		};
-	}
-	if (!isPartial && agents.length === 0) {
-		jobs = jobs.filter(job => job.status !== "running");
-		if (jobs.length === 0) return undefined;
 	}
 	const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
 	for (const job of jobs) counts[job.status]++;

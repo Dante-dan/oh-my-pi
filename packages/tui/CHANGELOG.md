@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep still-running wait snapshots visible beside their turn usage when sealing or rebuilding the transcript ([#12248](https://github.com/can1357/oh-my-pi/issues/12248)).
+
 ### Added
 
 - Exported `wordCompletionQuery()` so hosts outside the editor can apply the same prose gates as ghost-text word completion ([#13517](https://github.com/can1357/oh-my-pi/pull/13517) by [@andrebrait](https://github.com/andrebrait))

@@ -438,7 +438,7 @@ describe("#12248 completed wait turn replay", () => {
 				...pollResult(["running"]),
 				timestamp: Date.now(),
 			},
-		] as AgentMessage[];
+		] satisfies AgentMessage[];
 	}
 
 	it.each(["session", "transcript"] as const)("retains each wait with its original metrics in %s replay", mode => {

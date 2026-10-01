@@ -215,6 +215,42 @@ describe("job renderer task-result preview", () => {
 			expect(JSON.stringify(view?.body)).toContain("Job1 running");
 		});
 
+		it.each([true, false])("animates running native rows only while the poll is live (%s)", isPartial => {
+			const result = {
+				content: [{ type: "text" as const, text: "Still Running" }],
+				details: {
+					op: "wait" as const,
+					jobs: [jobsData[0], jobsData[1]],
+					agents: [{ id: "Worker", ageMs: 1_000, live: true }],
+				},
+			};
+			const view = waitToolRenderer.describeResult!(result, { expanded: true, isPartial });
+			const rows = view!.body!;
+			expect(rows[0]).toMatchObject({
+				c: [
+					{
+						c: [
+							{ k: "badge" },
+							{ k: "text", p: { spans: [isPartial ? { fx: "shimmer" } : { t: "Job1" }, expect.any(Object)] } },
+							{ k: "elapsed", p: isPartial ? { age: 1200 } : { age: 1200, stopped: 1200 } },
+						],
+					},
+				],
+			});
+			expect(rows[2]).toMatchObject({
+				c: [
+					expect.any(Object),
+					expect.any(Object),
+					{ k: "elapsed", p: isPartial ? { age: 1000 } : { age: 1000, stopped: 1000 } },
+				],
+			});
+			if (!isPartial) expect(JSON.stringify(view)).not.toContain('"fx":"shimmer"');
+			else {
+				expect(JSON.stringify(rows[0])).not.toContain('"stopped"');
+				expect(JSON.stringify(rows[2])).not.toContain('"stopped"');
+			}
+		});
+
 		it("renders agent rows for running agents outside job control", () => {
 			const result = {
 				content: [{ type: "text" as const, text: "" }],

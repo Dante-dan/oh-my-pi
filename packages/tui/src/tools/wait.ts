@@ -574,8 +574,8 @@ export function createIrcMessageCard(
 }
 
 /** One job row: type badge, id + label, terminal-clocked duration (live while running), preview below. */
-function describeJob(job: JobSnapshot): NativeNode {
-	const running = job.status === "running";
+function describeJob(job: JobSnapshot, isPartial: boolean): NativeNode {
+	const running = job.status === "running" && isPartial;
 	const label = job.label.trim() !== job.id ? plainText(job.label.split(/\r?\n/)[0] ?? "") : "";
 	const spans: TspSpan[] = [
 		span(plainText(job.id), running ? "accent" : "toolOutput", running ? { fx: "shimmer" } : undefined),
@@ -622,7 +622,7 @@ function describeJob(job: JobSnapshot): NativeNode {
 
 function describeJobsResult(
 	result: ToolRenderResult<CoordinationDetails>,
-	_isPartial: boolean,
+	isPartial: boolean,
 ): NativeToolView | undefined {
 	const jobs = result.details?.jobs ?? [];
 	const agents = result.details?.agents ?? [];
@@ -650,7 +650,7 @@ function describeJobsResult(
 	if (counts.cancelled > 0) head.push(span(` ${counts.cancelled} cancelled`, "warning"));
 	const order: Record<JobSnapshot["status"], number> = { running: 0, failed: 1, cancelled: 2, completed: 3 };
 	const sorted = [...jobs].sort((a, b) => order[a.status] - order[b.status] || b.durationMs - a.durationMs);
-	const body: NativeNode[] = sorted.map(describeJob);
+	const body: NativeNode[] = sorted.map(job => describeJob(job, isPartial));
 	for (const agent of agents) {
 		const spans: TspSpan[] = [span(plainText(agent.id), "muted")];
 		if (agent.activity) spans.push(span(` ${plainText(agent.activity)}`, "toolOutput"));
@@ -665,7 +665,7 @@ function describeJobsResult(
 						tone: agent.live ? "accent" : "warning",
 					}),
 					text(spans, { truncate: "end", grow: 1 }),
-					elapsed(agent.ageMs, !agent.live),
+					elapsed(agent.ageMs, !agent.live || !isPartial),
 				],
 				`agent:${agent.id}`,
 			),

@@ -998,6 +998,7 @@ export class InputController {
 				this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 			let hasInputImages = (inputImages?.length ?? 0) > 0;
 			const submittedImages = inputImages;
+			const submittedImageLinks = inputImageLinks;
 
 			if (runner?.hasHandlers("input")) {
 				const input = await this.#runInputHandlers(text, inputImages, inputImageLinks);
@@ -1013,7 +1014,17 @@ export class InputController {
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
 			if (this.#rejectInvalidSlashCommand(text)) {
-				restoreDetachedDraft(this.ctx.editor, text);
+				// Enter clears text but leaves its attachments live. Detach that
+				// snapshot before restoring the transformed draft alongside newer input.
+				if (
+					submittedImages?.length &&
+					submittedImages.every((image, index) => this.ctx.editor.pendingImages[index] === image)
+				) {
+					const newerText = shiftImageMarkers(this.ctx.editor.getExpandedText(), -submittedImages.length);
+					this.#dropSubmittedPending(submittedImages, submittedImageLinks);
+					this.ctx.editor.setCollapsedText(newerText);
+				}
+				restoreDetachedDraft(this.ctx.editor, text, inputImages, inputImageLinks);
 				return;
 			}
 			const submittedMode = parseSlashCommand(text)?.name;

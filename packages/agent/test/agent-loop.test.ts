@@ -482,14 +482,17 @@ describe("agentLoop with AgentMessage", () => {
 		expect(contexts[1]?.index).toBe(1);
 	});
 
-	it("surfaces validation error for malformed JSON parse sentinels without leaking __rawJson", async () => {
+	it.each([false, true])("rejects malformed JSON without executing a tool (lenient: %s)", async lenient => {
 		const toolSchema = type({ value: "string" });
+		let executions = 0;
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "echo",
 			label: "Echo",
 			description: "Echo tool",
 			parameters: toolSchema,
+			lenientArgValidation: lenient,
 			async execute() {
+				executions += 1;
 				return { content: [] };
 			},
 		};
@@ -523,6 +526,8 @@ describe("agentLoop with AgentMessage", () => {
 		for await (const event of stream) {
 			events.push(event);
 		}
+
+		expect(executions).toBe(0);
 
 		// Validation should have failed and reported the parse error & truncated JSON
 		const toolResultMsg = events.find(e => e.type === "message_start" && e.message.role === "toolResult") as any;

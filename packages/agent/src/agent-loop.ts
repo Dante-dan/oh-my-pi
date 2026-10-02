@@ -2907,7 +2907,7 @@ async function prepareToolCallDispatch(
 				}
 				return validateToolArguments(tool, { ...toolCall, arguments: args });
 			} catch (validationError) {
-				if (tool?.lenientArgValidation) {
+				if (tool?.lenientArgValidation && !("__parseError" in args)) {
 					const fallback = { ...args };
 					delete fallback.__parseError;
 					delete fallback.__rawJson;

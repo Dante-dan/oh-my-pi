@@ -44,7 +44,11 @@ import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import { pickRecentFocusableAgentId } from "./session-focus-controller";
-import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import {
+	executeBuiltinSlashCommand,
+	getBuiltinSlashCommandUsageError,
+	lookupBuiltinSlashCommand,
+} from "../../slash-commands/builtin-registry";
 import { restoreDetachedDraft } from "../../slash-commands/helpers/draft";
 import { parseSlashCommand, parseSubcommand } from "../../slash-commands/helpers/parse";
 import { isTinyLocalModelKey } from "../../tiny/models";
@@ -1008,6 +1012,10 @@ export class InputController {
 				({ text, images: inputImages, imageLinks: inputImageLinks } = input);
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
+			if (this.#rejectInvalidSlashCommand(text)) {
+				restoreDetachedDraft(this.ctx.editor, text);
+				return;
+			}
 			const submittedMode = parseSlashCommand(text)?.name;
 			const draftDetached =
 				submittedMode === "plan" ||
@@ -1388,6 +1396,24 @@ export class InputController {
 			}
 		}
 		return undefined;
+	}
+
+	/** Reject command typos locally, after input hooks get their chance to rewrite them. */
+	#rejectInvalidSlashCommand(text: string): boolean {
+		if (!text.startsWith("/")) return false;
+		const parsed = parseSlashCommand(text);
+		const usageError = parsed ? getBuiltinSlashCommandUsageError(parsed) : undefined;
+		const token = text.slice(1).split(/\s/, 1)[0];
+		if (
+			!usageError &&
+			((parsed && lookupBuiltinSlashCommand(parsed.name)) ||
+				isKnownSkillCommand(this.ctx, text) ||
+				this.#isKnownNonBuiltinSlashCommandToken(token))
+		) {
+			return false;
+		}
+		this.ctx.showError(usageError ?? `Unknown command: ${text.split(/\s/, 1)[0]}`);
+		return true;
 	}
 
 	/** Whether `token` names a skill, file, extension, custom, or prompt-template command. */
@@ -1875,6 +1901,11 @@ export class InputController {
 				this.ctx.showError(error instanceof Error ? error.message : String(error));
 				return;
 			}
+		}
+
+		if (this.#rejectInvalidSlashCommand(text)) {
+			restoreDetachedDraft(this.ctx.editor, text, images, imageLinks);
+			return;
 		}
 
 		// Compaction first: while compacting, free text gets queued via

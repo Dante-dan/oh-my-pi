@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added provider quota usage to the full and nerd status-line presets ([#9929](https://github.com/can1357/oh-my-pi/issues/9929)).
+
+### Added
+
 - Added display of subagent completion percent in agent tree, task, and wait views
 ### Fixed
 

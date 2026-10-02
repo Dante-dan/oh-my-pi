@@ -80,6 +80,36 @@ async function flushUsageRefresh(): Promise<void> {
 }
 
 describe("usage status-line segment", () => {
+	it("shows provider quota in full and nerd presets but keeps lean presets opt-in", async () => {
+		const reports = [{ limits: [{ scope: { windowId: "5h" }, amount: { usedFraction: 0.24 } }] }];
+		for (const preset of ["full", "nerd", "default", "minimal", "compact", "ascii"] as const) {
+			const component = makeComponent(reports);
+			component.updateSettings({ preset, sessionAccent: false });
+			component.refreshUsageInBackground();
+			await flushUsageRefresh();
+			const content = stripVTControlCharacters(component.getTopBorder(500).content);
+			if (preset === "full" || preset === "nerd") {
+				expect(content).toContain("5h");
+				expect(content).toContain("24%");
+			} else {
+				expect(content).not.toContain("5h");
+				expect(content).not.toContain("24%");
+			}
+		}
+	});
+
+	it("omits quota from full and nerd presets when the provider reports no limits", async () => {
+		for (const preset of ["full", "nerd"] as const) {
+			const component = makeComponent([]);
+			component.updateSettings({ preset, sessionAccent: false });
+			component.refreshUsageInBackground();
+			await flushUsageRefresh();
+			const content = stripVTControlCharacters(component.getTopBorder(500).content);
+			expect(content).not.toContain("5h");
+			expect(content).not.toContain("7d");
+		}
+	});
+
 	it("renders untiered five-hour and seven-day limits", () => {
 		const result = renderSegment("usage", {
 			usage: { fiveHour: { percent: 24, resetMinutes: 30 }, sevenDay: { percent: 8, resetHours: 141 } },

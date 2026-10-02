@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Unknown slash commands and unsupported arguments are rejected locally instead of being sent to the model ([#14123](https://github.com/can1357/oh-my-pi/issues/14123)).
+- Unknown slash commands and unsupported arguments are rejected locally instead of being sent to the model ([#14133](https://github.com/can1357/oh-my-pi/pull/14133) by [@Dante-dan](https://github.com/Dante-dan)).
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 

@@ -46,7 +46,7 @@ import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
-import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
+import { cfgDefaultThinkingLevel, cfgProvidersAutoThinkingTimeoutMs, cfgProvidersFireworksTier } from "./settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
 
 /** Capabilities borrowed from the owning AgentSession. */
@@ -603,9 +603,6 @@ export class ModelControls {
 		return nextLevel;
 	}
 
-	/** Timeout (ms) for per-turn auto-thinking classification before falling back. */
-	static readonly #AUTO_THINKING_TIMEOUT_MS = 4000;
-
 	/**
 	 * Classify the current user turn and set the effective thinking level for it.
 	 * `solutionSpace` is a delegator's open-endedness description (task-spawned turns
@@ -630,7 +627,7 @@ export class ModelControls {
 			resolved = clampAutoThinkingEffort(model, Effort.Max);
 		} else {
 			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), ModelControls.#AUTO_THINKING_TIMEOUT_MS);
+			const timer = setTimeout(() => controller.abort(), cfgProvidersAutoThinkingTimeoutMs.get(this.#host.settings));
 			const usageOwner = {
 				sessionId: this.#host.sessionManager.getSessionId(),
 				parentId: this.#host.sessionManager.getLeafId(),

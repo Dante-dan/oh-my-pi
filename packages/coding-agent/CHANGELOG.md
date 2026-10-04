@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Configure auto-thinking classification wait time with `providers.autoThinkingTimeoutMs` ([#14321](https://github.com/can1357/oh-my-pi/issues/14321)).
+
 ### Fixed
 
 - Fixed follow-up hashline edits being rejected as anchored on lines "never displayed" after an earlier edit shifted those lines, when the replacement carries the anchored content; genuinely stale line numbers are still rejected ([#14254](https://github.com/can1357/oh-my-pi/pull/14254) by [@abilliontokens](https://github.com/abilliontokens)).

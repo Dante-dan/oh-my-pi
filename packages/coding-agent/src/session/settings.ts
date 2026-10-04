@@ -989,6 +989,26 @@ export const cfgProvidersTinyModelDtype = register({
 	},
 });
 
+export const cfgProvidersAutoThinkingTimeoutMs = register({
+	id: "providers.autoThinkingTimeoutMs",
+	type: "number",
+	default: 4000,
+	validate: value => {
+		if (value === undefined) return;
+		if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 2_147_483_647) {
+			throw new Error("providers.autoThinkingTimeoutMs must be an integer between 1 and 2147483647 milliseconds");
+		}
+	},
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Auto Thinking Timeout",
+		description:
+			"Time in milliseconds to wait for auto-thinking classification before aborting and keeping the last resolved effort (or the initial provisional effort). Increase this for slow judge models or networks.",
+		condition: "autoThinkingActive",
+	},
+});
+
 export const cfgProvidersAutoThinkingMaxEffort = register({
 	id: "providers.autoThinkingMaxEffort",
 	type: "enum",

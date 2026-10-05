@@ -5,6 +5,8 @@ import { NON_VISION_IMAGE_PLACEHOLDER } from "@oh-my-pi/pi-ai/providers/vision-g
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 interface OllamaChatMessagePayload {
+	thinking?: unknown;
+	tool_calls?: unknown;
 	role?: unknown;
 	content?: unknown;
 	images?: unknown;
@@ -453,4 +455,76 @@ describe("Ollama chat sampling options", () => {
 
 		expect(payload && "options" in payload && payload.options !== undefined).toBe(false);
 	});
+});
+
+// #9693: preserve verified cloud history while retaining the legacy guard for other cloud models.
+describe("Ollama assistant thinking history", () => {
+	for (const { provider, id, expectedThinking } of [
+		{ provider: "ollama-cloud", id: "glm-5.2", expectedThinking: true },
+		{ provider: "ollama-cloud", id: "glm-5.2:cloud", expectedThinking: true },
+		{ provider: "ollama-cloud", id: "deepseek-v4-flash", expectedThinking: false },
+		{ provider: "ollama", id: "deepseek-v4-flash", expectedThinking: true },
+	]) {
+		it(`replays ${provider}/${id} plain and tool-call history with the supported thinking contract`, async () => {
+			const model = createReasoningOllamaModel();
+			model.provider = provider;
+			model.id = id;
+			let payload: OllamaChatRequestPayload | undefined;
+			const fetchMock = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				const parsed: unknown = JSON.parse(String(init?.body));
+				if (!isOllamaChatRequestPayload(parsed)) throw new Error("Expected Ollama payload object");
+				payload = parsed;
+				return new Response('{"message":{"content":"Paris"},"done":true,"done_reason":"stop"}\n');
+			};
+			const history: AssistantMessage = {
+				role: "assistant",
+				api: "ollama-chat",
+				provider,
+				model: id,
+				content: [
+					{ type: "thinking", thinking: "Return the requested letter." },
+					{ type: "text", text: "A" },
+				],
+				usage: emptyUsage,
+				stopReason: "stop",
+				timestamp: 1,
+			};
+			const context: Context = {
+				messages: [
+					{ role: "user", content: "Say A", timestamp: 0 },
+					history,
+					{ role: "user", content: "Look up the capital of France", timestamp: 2 },
+					{
+						...history,
+						content: [
+							{ type: "thinking", thinking: "Look up the capital before answering." },
+							{ type: "toolCall", id: "lookup-1", name: "lookup", arguments: { q: "capital of France" } },
+						],
+						stopReason: "toolUse",
+						timestamp: 3,
+					},
+					{
+						role: "toolResult",
+						toolCallId: "lookup-1",
+						toolName: "lookup",
+						content: [{ type: "text", text: "Paris" }],
+						isError: false,
+						timestamp: 4,
+					},
+				],
+			};
+			const result = await streamOllama(model, context, { apiKey: "test-key", fetch: fetchMock }).result();
+			expect(result.stopReason).toBe("stop");
+			const assistantMessages = payload?.messages?.filter(message => message.role === "assistant");
+			expect(assistantMessages?.map(message => message.thinking)).toEqual(
+				expectedThinking
+					? ["Return the requested letter.", "Look up the capital before answering."]
+					: [undefined, undefined],
+			);
+			expect(assistantMessages?.[0]?.content).toBe("A");
+			expect(assistantMessages?.[1]?.tool_calls).toEqual([
+				{ type: "function", function: { name: "lookup", arguments: { q: "capital of France" } } },
+			]);
+		});
+	}
 });

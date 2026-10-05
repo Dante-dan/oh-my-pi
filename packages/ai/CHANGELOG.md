@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved GLM-5.2 reasoning when replaying assistant history through Ollama Cloud ([#9693](https://github.com/can1357/oh-my-pi/issues/9693)).
+
 ## [18.6.1] - 2026-10-04
 
 ### Fixed

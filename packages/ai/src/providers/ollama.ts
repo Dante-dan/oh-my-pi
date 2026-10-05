@@ -252,9 +252,7 @@ function convertMessages(model: Model<"ollama-chat">, context: Context): OllamaM
 		timestamp: Date.now(),
 	}));
 	const messages: Message[] = [...systemMessages, ...context.messages];
-	// #9693: glm-5.2 accepts thinking in both plain and tool-call history.
-	// Keep the legacy guard for cloud models whose replay contract is unverified.
-	const stripCloudThinking = model.provider === "ollama-cloud" && !/^glm-5\.2(?::cloud)?$/.test(model.id);
+	const stripThinkingHistory = model.compat.stripThinkingHistory;
 	const supportsImages = model.input.includes("image");
 	const converted = transformMessages(messages, model).map((msg, index) => {
 		// Real `systemPrompt` entries (always emitted first) stay on Ollama's
@@ -270,7 +268,7 @@ function convertMessages(model: Model<"ollama-chat">, context: Context): OllamaM
 		const converted = convertMessage(msg, supportsImages, developerRole);
 		// Some Ollama Cloud models historically rejected thinking in history (#1000).
 		// Preserve reasoning for the verified model without weakening that guard everywhere.
-		if (stripCloudThinking && converted.role === "assistant" && converted.thinking) {
+		if (stripThinkingHistory && converted.role === "assistant" && converted.thinking) {
 			const { thinking: _t, ...rest } = converted;
 			return rest;
 		}

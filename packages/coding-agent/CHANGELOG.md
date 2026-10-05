@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Coalesced matching notes from different advisors reviewing the same turn in queued and terminal-boundary batches, retaining the strongest severity ([#9698](https://github.com/can1357/oh-my-pi/issues/9698)).
+- Coalesced matching notes from different advisors reviewing the same turn in queued and terminal-boundary batches, retaining the strongest severity ([#14439](https://github.com/can1357/oh-my-pi/pull/14439) by [@Dante-dan](https://github.com/Dante-dan); [#9698](https://github.com/can1357/oh-my-pi/issues/9698)).
 
 ## [18.6.2] - 2026-10-04
 

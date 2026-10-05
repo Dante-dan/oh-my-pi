@@ -15,6 +15,10 @@ export const SPACE_HOLD_MECHANICAL_RUN = 2;
 /** Idle gap (ms) after the last repeated space that counts as the space bar being released, ending
  *  the push-to-talk recording. Must comfortably exceed the OS key-repeat interval. */
 export const SPACE_HOLD_RELEASE_MS = 250;
+/** A release timer firing more than this (ms) past its deadline means the event loop stalled (a
+ *  synchronous microphone open, GC, a heavy render) while the bar may still be held: the repeats
+ *  emitted during the stall are queued but unread, so the stall must not read as a release. */
+export const SPACE_HOLD_STALL_SLACK_MS = 100;
 
 /** Whether two consecutive inter-space gaps look machine-driven: both within the auto-repeat band
  *  and steady enough (small absolute or proportional difference). OS key-repeat is metronomic, so
@@ -122,9 +126,16 @@ export class SpaceHoldGesture {
 	}
 
 	#armReleaseTimer(): void {
-		if (this.#releaseTimer) clearTimeout(this.#releaseTimer);
+		clearTimeout(this.#releaseTimer);
+		const armedAt = performance.now();
 		this.#releaseTimer = setTimeout(() => {
 			this.#releaseTimer = undefined;
+			// Late firing means input went unobserved; wait one more window so queued repeats can
+			// re-arm the timer before deciding the bar was released.
+			if (performance.now() - armedAt > SPACE_HOLD_RELEASE_MS + SPACE_HOLD_STALL_SLACK_MS) {
+				this.#armReleaseTimer();
+				return;
+			}
 			this.#end();
 		}, SPACE_HOLD_RELEASE_MS);
 		this.#releaseTimer.unref?.();

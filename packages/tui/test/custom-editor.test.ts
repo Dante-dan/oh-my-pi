@@ -18,7 +18,12 @@ import {
 	extractImagePathFromText,
 	extractPastePathsFromText,
 } from "@oh-my-pi/pi-tui/prompt/custom-editor";
-import { SPACE_HOLD_MECHANICAL_RUN, SPACE_HOLD_RELEASE_MS, SPACE_REPEAT_MAX_GAP_MS } from "@oh-my-pi/pi-tui/space-hold";
+import {
+	SPACE_HOLD_MECHANICAL_RUN,
+	SPACE_HOLD_RELEASE_MS,
+	SPACE_HOLD_STALL_SLACK_MS,
+	SPACE_REPEAT_MAX_GAP_MS,
+} from "@oh-my-pi/pi-tui/space-hold";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 function makeEditor(holdEnabled = true) {
@@ -767,6 +772,7 @@ describe("CustomEditor space-hold push-to-talk", () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("recognizes a held bar from a steady fast cadence and tracks back the burst", () => {
@@ -783,6 +789,29 @@ describe("CustomEditor space-hold push-to-talk", () => {
 		expect(editor.getText()).toBe("hi");
 		expect(events).toEqual(["start"]);
 		// An idle gap with no further repeats means the bar was released -> stop + transcribe.
+		vi.advanceTimersByTime(SPACE_HOLD_RELEASE_MS + 1);
+		expect(events).toEqual(["start", "end"]);
+	});
+
+	it("keeps recording when starting it stalls the event loop past the release window", () => {
+		const { editor, events } = makeEditor();
+		// Opening the microphone blocks the loop synchronously: the clock jumps while the repeats
+		// the held bar emits during the block sit unread in stdin.
+		const fakeNow = performance.now.bind(performance);
+		let stalledMs = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => fakeNow() + stalledMs);
+		editor.spaceHold.handler!.onStart = () => {
+			events.push("start");
+			stalledMs += SPACE_HOLD_RELEASE_MS + SPACE_HOLD_STALL_SLACK_MS + 300;
+		};
+		feedSpaces(editor, SPACE_HOLD_MECHANICAL_RUN + 2, REPEAT_GAP_MS);
+		expect(events).toEqual(["start"]);
+		// The overdue release timer fires before the queued repeats are read; it must not stop.
+		vi.advanceTimersByTime(SPACE_HOLD_RELEASE_MS + 1);
+		expect(events).toEqual(["start"]);
+		// The queued repeats arrive and keep the hold alive; a real idle gap then releases.
+		feedSpaces(editor, 5, REPEAT_GAP_MS);
+		expect(events).toEqual(["start"]);
 		vi.advanceTimersByTime(SPACE_HOLD_RELEASE_MS + 1);
 		expect(events).toEqual(["start", "end"]);
 	});

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Coalesced matching notes from different advisors reviewing the same turn in queued and terminal-boundary batches, retaining the strongest severity ([#9698](https://github.com/can1357/oh-my-pi/issues/9698)).
+
 ## [18.6.2] - 2026-10-04
 
 ### Fixed

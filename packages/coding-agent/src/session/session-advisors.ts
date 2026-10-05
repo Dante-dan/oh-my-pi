@@ -1767,7 +1767,8 @@ export class SessionAdvisors {
 		if (this.#advisorBoundaryNotes.length === 0) return;
 		// Newest turn first, then severity: the latest notes describe the current
 		// state of the work; older ones may already be resolved by it.
-		const notes = coalesceAdvisorBatchNotes(this.#advisorBoundaryNotes);
+		const boundaryNotes = this.#advisorBoundaryNotes;
+		const notes = coalesceAdvisorBatchNotes(boundaryNotes);
 		this.#advisorBoundaryNotes = [];
 		for (const n of notes) {
 			if (n.turn !== undefined && this.#advisorPrimaryTurnsCompleted > n.turn) {
@@ -1789,7 +1790,9 @@ export class SessionAdvisors {
 		const aborting = this.#host.abortInProgress();
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
 		const interruptImmuneTurnActive = this.#isAdvisorInterruptImmuneTurnActive();
-		const shouldSteer = notes.some(n => {
+		// Display coalescing must not discard a final reviewer's eligibility
+		// when an identical turn-mode concern arrived first.
+		const shouldSteer = boundaryNotes.some(n => {
 			// Steering eligibility: a blocker, or a concern from an agent-end
 			// reviewer. A turn-mode concern at a terminal boundary still
 			// preserves: the work was already reviewed per-turn.

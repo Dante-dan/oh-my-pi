@@ -59,9 +59,12 @@ impl EscapeMonitor {
 				// SAFETY: MSG is plain integer/pointer storage; PeekMessage ensures
 				// the queue exists before the owner may post its teardown wake.
 				let mut message: MSG = unsafe { std::mem::zeroed() };
+				// SAFETY: message is writable storage owned by this thread; a null
+				// HWND with no filter only creates/inspects this thread's queue.
 				unsafe {
 					PeekMessageW(&raw mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
 				}
+				// SAFETY: GetCurrentThreadId has no preconditions.
 				let _ = ready.send(Some(unsafe { GetCurrentThreadId() }));
 				loop {
 					// SAFETY: writable message storage, no filter; WM_QUIT wakes it.

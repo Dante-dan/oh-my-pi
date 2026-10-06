@@ -589,6 +589,8 @@ export interface StreamOptions {
 	 * are not covered.
 	 */
 	maxInFlightRequests?: Record<string, number>;
+	/** @internal Keep the in-flight permit until a provider's bounded terminal drain finishes. */
+	waitForTerminalDrain?: boolean;
 	/**
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.

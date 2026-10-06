@@ -1476,7 +1476,7 @@ mod foreground {
 	}
 
 	/// Bounded packets preserve short-send accounting without constructing an
-	/// uninterruptible SendInput batch proportional to the entire text.
+	/// uninterruptible `SendInput` batch proportional to the entire text.
 	pub(super) fn type_desktop(text: &str) -> CoreResult<()> {
 		send_text(None, text)
 	}

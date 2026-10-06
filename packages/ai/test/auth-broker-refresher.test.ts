@@ -35,6 +35,32 @@ describe("AuthBrokerRefresher", () => {
 		}
 	});
 
+	test("a failed reload does not reject the background sweep and the next sweep can refresh", async () => {
+		const now = 1_700_000_000_000;
+		await store!.saveOAuth("anthropic", {
+			access: "old",
+			refresh: "old-refresh",
+			expires: now + 60_000,
+			accountId: "a",
+		});
+		storage = new AuthStorage(store!);
+		const reloadSpy = vi.spyOn(storage.credentials, "reload").mockRejectedValueOnce(new Error("database is locked"));
+		const refreshSpy = vi.spyOn(oauthUtils, "refreshOAuthToken").mockResolvedValue({
+			access: "fresh",
+			refresh: "fresh-refresh",
+			expires: now + 2 * 60 * 60_000,
+			accountId: "a",
+		});
+		const refresher = new AuthBrokerRefresher({ storage, now: () => now, refreshIntervalMs: 60_000 });
+
+		await expect(refresher.tick()).resolves.toBeUndefined();
+		expect(refreshSpy).not.toHaveBeenCalled();
+		expect(refresher.getSchedule().nextSweepAt).toBe(now + 60_000);
+		await refresher.tick();
+		expect(reloadSpy).toHaveBeenCalledTimes(2);
+		expect(store!.getOAuth("anthropic")?.access).toBe("fresh");
+	});
+
 	test("refreshes credentials inside the skew window", async () => {
 		const now = 1_700_000_000_000;
 		const skew = 5 * 60_000;

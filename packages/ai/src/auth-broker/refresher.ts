@@ -94,6 +94,8 @@ export class AuthBrokerRefresher {
 				targets.push(entry.id);
 			}
 			await Promise.all(targets.map(id => this.#refreshOne(id)));
+		} catch (error) {
+			logger.warn("auth-broker refresh sweep failed", { error: String(error) });
 		} finally {
 			this.#running = false;
 			this.#nextSweepAt = this.#now() + this.#refreshIntervalMs;

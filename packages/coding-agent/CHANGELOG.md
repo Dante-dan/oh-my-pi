@@ -8,7 +8,7 @@
 
 ### Added
 
-- Expose the configured thinking selector to extensions with `getConfiguredThinkingLevel()` ([#14562](https://github.com/can1357/oh-my-pi/issues/14562)).
+- Expose the configured thinking selector to extensions with `getConfiguredThinkingLevel()` ([#14562](https://github.com/can1357/oh-my-pi/issues/14562), [#14580](https://github.com/can1357/oh-my-pi/pull/14580) by [@Dante-dan](https://github.com/Dante-dan)).
 
 - Added an agents HUD pill counting running subagents, opening the agent hub on click
 - Added the `composer.thinkingInModel` setting (Thinking Level in Model Chip): in Tern the thinking level shows as the model chip's icon instead of a separate chip, still cycling on click

@@ -2590,7 +2590,7 @@ export class AcpAgent implements Agent {
 					return true;
 				},
 				getThinkingLevel: () => record.session.thinkingLevel,
-				getConfiguredThinkingLevel: () => record.session.configuredThinkingLevel(),
+				getConfiguredThinkingLevel: () => record.session.getConfiguredThinkingLevel(),
 				setThinkingLevel: level => record.session.setThinkingLevel(level),
 				getServiceTiers: () => record.session.serviceTierByFamily,
 				setServiceTier: (family, tier) => record.session.setServiceTierFamily(family, tier),

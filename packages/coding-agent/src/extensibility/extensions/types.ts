@@ -1624,7 +1624,7 @@ export interface ExtensionAPI {
 	/** Get the current resolved thinking level. */
 	getThinkingLevel(): ThinkingLevel | undefined;
 
-	/** Get "auto" while automatic thinking is enabled, otherwise the effective model-clamped level. */
+	/** Get the user-selected effort (including "auto") before model or session ceilings clamp it. */
 	getConfiguredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 
 	/** Set thinking level for the current session. */

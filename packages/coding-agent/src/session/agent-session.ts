@@ -1657,6 +1657,7 @@ export class AgentSession implements SettingsScope {
 		this.#models = new ModelControls(modelControlsHost, {
 			scopedModels: config.scopedModels,
 			thinkingLevel: config.thinkingLevel,
+			configuredThinkingSelector: config.configuredThinkingSelector,
 			thinkingLevelCeiling: config.thinkingLevelCeiling,
 			serviceTierByFamily: config.serviceTierByFamily,
 		});
@@ -5897,6 +5898,11 @@ export class AgentSession implements SettingsScope {
 		return this.#models.configuredThinkingLevel();
 	}
 
+	/** User-selected effort before model metadata or session ceilings clamp it. */
+	getConfiguredThinkingLevel(): ConfiguredThinkingLevel | undefined {
+		return this.#models.getConfiguredThinkingLevel();
+	}
+
 	/** True when `auto` thinking mode is active. */
 	get isAutoThinking(): boolean {
 		return this.#models.isAutoThinking;
@@ -9458,7 +9464,7 @@ export class AgentSession implements SettingsScope {
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
 			// restarts at the provisional level; a pinned level re-resolves to itself.
-			this.#models.restoreThinkingLevel(this.configuredThinkingLevel());
+			this.#models.restoreThinkingLevel(this.getConfiguredThinkingLevel());
 			// Drop the frozen system-prompt/tool snapshot and synced message bytes
 			// (mirrors freshSession()/resetSessionContext()): without this the first
 			// post-/new turns keep sending the previous session's StablePrefix, and
@@ -9479,7 +9485,7 @@ export class AgentSession implements SettingsScope {
 			this.#queuedMessageDrainBlocked = false;
 			this.#usagePreflightReadyForNextModelCall = false;
 
-			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.configuredThinkingLevel());
+			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.getConfiguredThinkingLevel());
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
@@ -10974,6 +10980,7 @@ export class AgentSession implements SettingsScope {
 		const previousUsagePreflightReadyModel = this.#usagePreflightReadyModel;
 		const previousModel = this.model;
 		const previousThinkingLevel = this.thinkingLevel;
+		const previousConfiguredThinkingLevel = this.getConfiguredThinkingLevel();
 		const previousAutoThinking = this.isAutoThinking;
 		const previousAutoResolvedLevel = this.autoResolvedThinkingLevel();
 		const previousServiceTierByFamily = this.serviceTierByFamily;
@@ -11258,7 +11265,12 @@ export class AgentSession implements SettingsScope {
 				this.agent.setModel(previousModel);
 				modelRolledBack = !modelsAreEqual(rolledBackModel, previousModel);
 			}
-			this.#models.restoreThinkingSnapshot(previousThinkingLevel, previousAutoThinking, previousAutoResolvedLevel);
+			this.#models.restoreThinkingSnapshot(
+				previousThinkingLevel,
+				previousAutoThinking,
+				previousAutoResolvedLevel,
+				previousConfiguredThinkingLevel,
+			);
 			this.#models.restoreServiceTiers(previousServiceTierByFamily);
 			if (modelRolledBack) {
 				this.#emit({ type: "model_changed" });

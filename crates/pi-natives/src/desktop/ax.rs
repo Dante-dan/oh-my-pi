@@ -418,7 +418,7 @@ fn escaped_truncated(value: &str, max: usize) -> String {
 		.replace('\n', " ")
 }
 
-fn node_to_napi(reference: String, props: AxProps) -> AxNode {
+pub fn node_to_napi(reference: String, props: AxProps) -> AxNode {
 	let (x, y, width, height) = props
 		.bounds
 		.map_or((None, None, None, None), |b| (Some(b.x), Some(b.y), Some(b.width), Some(b.height)));

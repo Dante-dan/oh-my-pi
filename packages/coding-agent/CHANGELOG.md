@@ -30,7 +30,7 @@
 
 ### Fixed
 
-- Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths.
+- Fixed ACP and browser diagnostics and SSH host listings pointing to the default location instead of the configured log or SSH config paths ([#14558](https://github.com/can1357/oh-my-pi/pull/14558) by [@Dante-dan](https://github.com/Dante-dan)).
 
 - Fixed browser `tab.goto`, `back`, `forward` and `reload` timing out on pages whose ad, chat or other iframe never finishes loading, although the page itself had loaded ([#14421](https://github.com/can1357/oh-my-pi/pull/14421) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the token count after a snapcompact compaction (divider and RPC result) disagreeing with the context count right after it ([#14291](https://github.com/can1357/oh-my-pi/pull/14291) by [@will-bogusz](https://github.com/will-bogusz))

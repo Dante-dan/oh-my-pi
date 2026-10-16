@@ -9,6 +9,7 @@ import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { TrackSegment } from "@oh-my-pi/pi-tui/chrome/segment-track";
+import type { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import type { Settings } from "../config/settings";
 import type {
 	AutocompleteProviderFactory,
@@ -19,7 +20,7 @@ import type {
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
-import type { CompactOptions } from "../extensibility/extensions/types";
+import type { CompactOptions, PlanReviewChoice, PlanReviewRequestedEvent } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
@@ -91,7 +92,8 @@ export interface InteractiveModeInitOptions {
 	autoStartCollab?: boolean;
 }
 
-export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
+export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions &
+	Pick<HookSelectorOptions, "disabledIndices" | "inline">;
 
 export interface RenderSessionContextOptions {
 	updateFooter?: boolean;
@@ -117,6 +119,7 @@ export interface AgentHubOpenOptions {
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
+	readonly composer: Pick<Composer, "setRunActive">;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
@@ -148,6 +151,8 @@ export interface InteractiveModeContext {
 	readonly viewSession: AgentSession;
 	/** Id of the focused agent, undefined when the main session is attached. */
 	readonly focusedAgentId: string | undefined;
+	/** Set while a tool-approval dialog owns the composer: its drafts steer the main session awaiting that approval, even from a focused agent's view. */
+	approvalOwnsComposer?: boolean;
 	/** Focus the main view on an agent's live session (delegates to SessionFocusController.focusAgent). */
 	focusAgentSession(id: string): Promise<void>;
 	/** Focus the focused agent's parent session, falling back to main (delegates to focusParent). */
@@ -217,7 +222,7 @@ export interface InteractiveModeContext {
 	readonly assistantImagesVisible: boolean;
 	/** Whether the viewed session's tables get charts: the main session's do, a focused subagent's do not. */
 	readonly tableChartsVisible: boolean;
-	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>>;
+	resolveAssistantMessageLinkHrefs(hrefs: readonly string[]): Promise<ReadonlyMap<string, string>>;
 	/** Whether this visible session has produced thinking content the user can reveal. */
 	readonly hasDisplayableThinkingContent: boolean;
 	/** Record a message whose thinking content makes Ctrl+T meaningful even at thinking level "off"; returns true on first observation. */
@@ -296,6 +301,7 @@ export interface InteractiveModeContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined;
 
 	// UI helpers
 	/**
@@ -443,13 +449,16 @@ export interface InteractiveModeContext {
 	handleContextCommand(): void;
 	handleDumpCommand(): Promise<void>;
 	handleDumpAllCommand(): Promise<void>;
+	handleDumpAnonCommand(): Promise<void>;
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
+	/** User-initiated `/new`: {@link handleClearCommand} plus the `plan.defaultOnStartup` default. */
+	handleNewCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
 	handleDeleteCommand(): Promise<void>;
-	handleForkCommand(): Promise<void>;
+	handleForkCommand(placement?: "pane" | "window"): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
@@ -462,8 +471,8 @@ export interface InteractiveModeContext {
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
-	/** `/wt`: fork the checkout into a new worktree (keeping changes) and move there. */
-	handleWorktreeCommand(branch?: string): Promise<void>;
+	/** `/wt`: fork the checkout into a new worktree (keeping changes unless `keepChanges` is false) and move there. */
+	handleWorktreeCommand(branch?: string, options?: { keepChanges?: boolean }): Promise<void>;
 	withBtwSessionMove(operation: () => Promise<boolean>): Promise<boolean>;
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
@@ -513,7 +522,7 @@ export interface InteractiveModeContext {
 	showSessionPinSelector(): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
-	showHookConfirm(title: string, message: string): Promise<boolean>;
+	showHookConfirm(title: string, message: string, dialogOptions?: InteractiveSelectorDialogOptions): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
 	showAgentHub(options?: AgentHubOpenOptions): void;
 	resetObserverRegistry(): void;
@@ -572,10 +581,6 @@ export interface InteractiveModeContext {
 	dismissCommandReport(): boolean;
 	/** Screen rows a report above the editor may take (all of them but the editor and the chrome under it). */
 	commandReportRows(): number | undefined;
-	/** Whether the last frame put the editor on the bottom row of the screen. */
-	composerInputAtBottom(): boolean;
-	/** Keep the editor on the bottom row while the live rows cannot fill the screen (after a tall report closed). */
-	pinComposerToBottom(): void;
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
 	toggleToolOutputExpansion(): void;
@@ -601,7 +606,9 @@ export interface InteractiveModeContext {
 	disableGoalMode(message?: string): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
-	openPlanReview(): Promise<void>;
+	resolvePlanReview(reviewId: string, choice: PlanReviewChoice, input?: { feedback?: string; role?: string }): boolean;
+	getPendingPlanReview(): PlanReviewRequestedEvent | undefined;
+	openPlanReview(options?: { fromExtension?: boolean }): Promise<boolean>;
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;

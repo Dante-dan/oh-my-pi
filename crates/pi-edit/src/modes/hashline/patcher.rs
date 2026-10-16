@@ -32,6 +32,7 @@ use crate::{
 
 const SEEN_LINE_REVEAL_CAP: usize = 40;
 const SEEN_LINE_REVEAL_MAX_COLUMNS: usize = 512;
+const SEEN_LINE_REVEAL_MAX_BYTES: usize = 16 * 1024;
 
 #[allow(
 	clippy::suspicious_operation_groupings,
@@ -384,17 +385,16 @@ fn assert_seen_lines(
 	}
 	let source = snapshot.text.split('\n').collect::<Vec<_>>();
 	let mut revealed = Vec::new();
-	for &line in &unseen {
-		let Some(value) = usize::try_from(line)
-			.ok()
-			.and_then(|n| n.checked_sub(1))
-			.and_then(|n| source.get(n))
-		else {
-			continue;
-		};
-		if value.chars().count() > SEEN_LINE_REVEAL_MAX_COLUMNS {
-			return Err(EditError::matched(wide_unseen_lines_message(section.path.as_str(), &unseen)));
-		}
+	let mut reveal_bytes = 0;
+	// A partial reveal cannot authorize a retry. Keep the raw recovery path
+	// when its remaining range contains wide rows a normal read would cut.
+	if unseen.len() > SEEN_LINE_REVEAL_CAP
+		&& unseen.iter().any(|&line| {
+			source
+				.get(line.saturating_sub(1) as usize)
+				.is_some_and(|value| value.chars().count() > SEEN_LINE_REVEAL_MAX_COLUMNS)
+		}) {
+		return Err(EditError::matched(wide_unseen_lines_message(section.path.as_str(), &unseen)));
 	}
 	for &line in unseen.iter().take(SEEN_LINE_REVEAL_CAP) {
 		let Some(value) = usize::try_from(line)
@@ -404,6 +404,12 @@ fn assert_seen_lines(
 		else {
 			continue;
 		};
+		// Reveal complete source rows, including wide lines. Never promote a
+		// column-cut preview to seen provenance (issue #16000).
+		reveal_bytes += value.len() + line.to_string().len() + 4;
+		if reveal_bytes > SEEN_LINE_REVEAL_MAX_BYTES {
+			return Err(EditError::matched(wide_unseen_lines_message(section.path.as_str(), &unseen)));
+		}
 		revealed.push(RevealedLine { line, text: (*value).to_owned() });
 	}
 	let truncated = unseen.len() > revealed.len();
@@ -1115,13 +1121,11 @@ mod lifecycle {
 		]);
 	}
 
-	/// A wide line the read cut is not promoted by the guard's own column-capped
-	/// reveal: every retry names the `:raw` selector until the full line is
-	/// seen.
+	/// A line beyond the reveal byte budget still requires a full raw read.
 	#[tokio::test]
 	async fn wide_unseen_line_requires_full_read() {
 		let ctx = Lifecycle::new("wide.txt", 1);
-		let wide = format!("note: {} END-OF-LINE-TAIL", "abcdefghij".repeat(80));
+		let wide = format!("note: {} END-OF-LINE-TAIL", "abcdefghij".repeat(2000));
 		let original = format!("{wide}\nshort\n");
 		ctx.write_text("wide.txt", &original);
 		let tag = ctx.read("wide.txt", &[2]);
@@ -1138,5 +1142,46 @@ mod lifecycle {
 			.await
 			.unwrap();
 		assert_eq!(ctx.text("wide.txt"), full);
+	}
+
+	/// Issue #16000: the rejection reveals the full wide row and its tag, so
+	/// the corrected edit can preserve the tail without a tagless raw re-read.
+	#[tokio::test]
+	async fn wide_unseen_line_reveals_full_content_before_retry() {
+		let ctx = Lifecycle::new("wide.txt", 1);
+		let wide = format!("note: {} END-OF-LINE-TAIL", "abcdefghij".repeat(100));
+		let original = format!("{wide}\nshort\n");
+		ctx.write_text("wide.txt", &original);
+		let tag = ctx.read("wide.txt", &[2]);
+		let err = ctx
+			.edit(&format!("[wide.txt#{tag}]\nPUT 1.=1:\n+NOTE: cut\n"))
+			.await
+			.unwrap_err();
+		assert!(err.contains(&format!("  1:{wide}")), "incomplete reveal: {err}");
+		assert!(err.contains(&format!("[wide.txt#{tag}]")));
+		assert_eq!(ctx.text("wide.txt"), original);
+		ctx.edit(&format!("[wide.txt#{tag}]\nPUT 1.=1:\n+{}\n", wide.replace("note:", "NOTE:")))
+			.await
+			.unwrap();
+		assert_eq!(ctx.text("wide.txt"), original.replace("note:", "NOTE:"));
+	}
+
+	/// Issue #16000: the reveal budget counts UTF-8 bytes across all rows, not
+	/// columns or each row separately; a partial reveal must not grant seen
+	/// provenance.
+	#[tokio::test]
+	async fn unseen_lines_over_total_byte_budget_stay_unseen() {
+		let ctx = Lifecycle::new("wide.txt", 1);
+		let wide = "界".repeat(3000);
+		let original = format!("{wide}\n{wide}\nshort\n");
+		ctx.write_text("wide.txt", &original);
+		let tag = ctx.read("wide.txt", &[3]);
+		let patch = format!("[wide.txt#{tag}]\nCUT 1.=2\n");
+		for _ in 0..2 {
+			let err = ctx.edit(&patch).await.unwrap_err();
+			assert!(err.contains("wide.txt:1-2:raw"), "unexpected error: {err}");
+			assert!(!err.contains(&wide));
+			assert_eq!(ctx.text("wide.txt"), original);
+		}
 	}
 }

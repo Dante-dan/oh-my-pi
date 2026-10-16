@@ -163,9 +163,9 @@ describe("read tool column truncation vs hashline snapshot", () => {
 		expect(after).toBe(`intro\n${longLine}\nepilogue\n`);
 	});
 
-	it("rejects a PUT or CUT of a column-cut line until a raw read shows its tail", async () => {
+	it("rejects a PUT or CUT beyond the reveal budget until a raw read shows its tail", async () => {
 		const filePath = path.join(tmpDir, "tail.txt");
-		const longLine = `note: ${"abcdefghij".repeat(80)} END-OF-LINE-TAIL`;
+		const longLine = `note: ${"abcdefghij".repeat(2000)} END-OF-LINE-TAIL`;
 		const original = `first\n${longLine}\nlast\n`;
 		await fs.writeFile(filePath, original);
 
@@ -199,9 +199,35 @@ describe("read tool column truncation vs hashline snapshot", () => {
 		expect(await fs.readFile(filePath, "utf8")).toBe(original.replace("note:", "NOTE:"));
 	});
 
+	// Issue #16000: tool output must expose the full row and an editable tag,
+	// so correcting a wide-line edit does not require a tagless raw read.
+	it("reveals a column-cut row in the edit error and accepts a tail-preserving retry", async () => {
+		const filePath = path.join(tmpDir, "reveal.txt");
+		const longLine = `note: ${"abcdefghij".repeat(100)} END-OF-LINE-TAIL`;
+		const original = `first\n${longLine}\nlast\n`;
+		await fs.writeFile(filePath, original);
+		const session = createSession(tmpDir);
+		cfgToolsOutputMaxColumns.set(session.settings, 768);
+		const readText = textOutput(await new ReadTool(session).execute("read-cut", { path: filePath }));
+		expect(readText).not.toContain(longLine);
+		const { header } = extractHeader(readText);
+		const editTool = new EditTool(session, "hashline");
+		const rejected = await editTool.execute("edit-cut", { input: `${header}\nPUT 2.=2:\n+NOTE: cut\n` });
+		expect(rejected.isError).toBe(true);
+		const revealed = textOutput(rejected);
+		expect(revealed).toContain(`2:${longLine}`);
+		expect(revealed).toContain(header);
+		expect(await fs.readFile(filePath, "utf8")).toBe(original);
+		const retried = await editTool.execute("edit-full", {
+			input: `${header}\nPUT 2.=2:\n+${longLine.replace("note:", "NOTE:")}\n`,
+		});
+		expect(retried.isError).not.toBe(true);
+		expect(await fs.readFile(filePath, "utf8")).toBe(original.replace("note:", "NOTE:"));
+	});
+
 	it("rejects a cut line in a multi-range read but allows edits to the other displayed range", async () => {
 		const filePath = path.join(tmpDir, "multi-cut.txt");
-		const longLine = `note: ${"abcdefghij".repeat(80)} END-OF-LINE-TAIL`;
+		const longLine = `note: ${"abcdefghij".repeat(2000)} END-OF-LINE-TAIL`;
 		const original = `first\n${longLine}\nthird\nfourth\n`;
 		await fs.writeFile(filePath, original);
 		const session = createSession(tmpDir);
@@ -238,7 +264,7 @@ describe("read tool column truncation vs hashline snapshot", () => {
 
 	it("does not treat a clipped grep match as an editable full line", async () => {
 		const filePath = path.join(tmpDir, "grep-wide.txt");
-		const longLine = `note: ${"abcdefghij".repeat(80)} END-OF-LINE-TAIL`;
+		const longLine = `note: ${"abcdefghij".repeat(2000)} END-OF-LINE-TAIL`;
 		const original = `${longLine}\n`;
 		await fs.writeFile(filePath, original);
 		const session = createSession(tmpDir);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed edits to column-cut lines requiring a raw re-read when their full content fits in the edit error preview ([#16000](https://github.com/can1357/oh-my-pi/issues/16000))
+
 ## [18.11.2] - 2026-10-16
 
 ### Added
@@ -20,7 +24,6 @@
 
 ### Fixed
 
-- Fixed edits to column-cut lines requiring a raw re-read when their full content fits in the edit error preview ([#16000](https://github.com/can1357/oh-my-pi/issues/16000))
 - Fixed prewalk switching models during read-only MCP lookups through `write xd://` when the server marks the tool read-only ([#15994](https://github.com/can1357/oh-my-pi/issues/15994))
 - Fixed Ctrl+C printing `9;5u` in the shell after force-quitting omp with a third Ctrl+C while it was still closing the session
 - Fixed Smart unexpected-stop recovery continuing finished answers, which added extra "nothing more to add" turns

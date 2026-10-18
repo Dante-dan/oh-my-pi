@@ -113,6 +113,8 @@ export interface VisitEntriesFromFileStreamOptions {
 export interface LoadSessionOptions {
 	/** Propagate ENOENT instead of treating the path as a new empty session. */
 	throwIfMissing?: boolean;
+	/** Refuse a full load before parsing when the source exceeds this many bytes. */
+	maxBytes?: number;
 }
 
 /** Parsed session entries plus corruption metadata needed by writable loaders. */
@@ -477,6 +479,13 @@ export async function loadSessionFile(
 ): Promise<SessionLoadResult> {
 	try {
 		const statSize = storage.statSync(filePath).size;
+		if (options.maxBytes !== undefined && statSize > options.maxBytes) {
+			throw new Error(
+				`Cannot resume session "${filePath}": transcript is ${statSize} bytes, exceeding the ${options.maxBytes}-byte load limit. ` +
+					`The transcript was not loaded or modified. Start fresh with --session-dir <new-directory> (without --resume/--continue), and keep a backup before repairing this transcript. ` +
+					`PI_SESSION_MAX_LOAD_BYTES can raise the limit explicitly, but loading a large transcript may crash the runtime.`,
+			);
+		}
 		const { loaded, sourceSize } = await loadWithKnownSize(filePath, storage, statSize, options);
 		return { ...loaded, sourceSize };
 	} catch (caught) {

@@ -9,6 +9,7 @@ import type {
 	Usage,
 } from "@oh-my-pi/pi-ai";
 import {
+	$envpos,
 	directoryIsEnterable,
 	directoryIsMissing,
 	getBlobsDir,
@@ -123,6 +124,9 @@ import {
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
 import { recordSessionRecap, recordSessionTitle } from "./session-index";
+
+// Conservative pre-load backstop; this is not a proven runtime safety boundary.
+const DEFAULT_MAX_SESSION_LOAD_BYTES = 256 * 1024 * 1024;
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -2335,7 +2339,11 @@ export class SessionManager {
 		this.#sessionClaim = undefined;
 
 		const resolvedSessionFile = path.resolve(sessionFile);
-		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
+		const loaded =
+			loadedSession ??
+			(await loadSessionFile(resolvedSessionFile, this.#storage, {
+				maxBytes: $envpos("PI_SESSION_MAX_LOAD_BYTES", DEFAULT_MAX_SESSION_LOAD_BYTES),
+			}));
 		const sourceSize =
 			loaded.sourceSize !== undefined
 				? loaded.sourceSize
@@ -4197,7 +4205,11 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 		options?: { initialCwd?: string; parentSession?: string; suppressBreadcrumb?: boolean; throwIfMissing?: boolean },
 	): Promise<SessionManager> {
-		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
+		const loadOptions = {
+			throwIfMissing: options?.throwIfMissing,
+			maxBytes: $envpos("PI_SESSION_MAX_LOAD_BYTES", DEFAULT_MAX_SESSION_LOAD_BYTES),
+		};
+		const probed = await loadSessionFile(filePath, storage, loadOptions);
 		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		// Resume into the session's recorded cwd only when it is verifiably
 		// accessible. A deleted or permission-blocked (macOS TCC denial) project
@@ -4220,9 +4232,7 @@ export class SessionManager {
 		// transcript deleted, truncated, or replaced mid-probe then fails
 		// closed here (ENOENT / holds-no-entries, without minting) instead of
 		// reviving stale history. Other callers keep the single probe read.
-		const loaded = options?.throwIfMissing
-			? await loadSessionFile(filePath, storage, { throwIfMissing: true })
-			: probed;
+		const loaded = options?.throwIfMissing ? await loadSessionFile(filePath, storage, loadOptions) : probed;
 		await manager.#setSessionFile(filePath, loaded, {
 			throwIfMissing: options?.throwIfMissing,
 			newSession: { parentSession: options?.parentSession },

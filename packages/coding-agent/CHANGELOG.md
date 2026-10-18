@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Refuse oversized session resumes before loading or appending, preserving the transcript and explaining how to start fresh or explicitly raise the safety limit ([#16237](https://github.com/can1357/oh-my-pi/issues/16237))
+
 ## [18.12.2] - 2026-10-18
 
 ### Added

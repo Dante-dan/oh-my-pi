@@ -25,6 +25,20 @@ describe("loadSessionFile sourceSize", () => {
 		expect(loaded.sourceSize).toBe(Buffer.byteLength(content, "utf8"));
 	});
 
+	it("refuses an oversized full load without reading or changing the journal", async () => {
+		const storage = new MemorySessionStorage();
+		const content = `${HEADER}\n${LINE}\n`;
+		storage.writeTextSync("/s/limited.jsonl", content);
+		const size = Buffer.byteLength(content, "utf8");
+
+		await expect(loadSessionFile("/s/limited.jsonl", storage, { maxBytes: size - 1 })).rejects.toThrow(
+			/exceeding.*load limit/,
+		);
+		expect(await storage.readText("/s/limited.jsonl")).toBe(content);
+		const loaded = await loadSessionFile("/s/limited.jsonl", storage, { maxBytes: size });
+		expect(loaded.entries.map(entry => entry.id)).toEqual(["s1", "m1"]);
+	});
+
 	it("stays null when the path does not exist", async () => {
 		const dir = TempDir.createSync("@loader-source-size-");
 		try {

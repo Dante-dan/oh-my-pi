@@ -9,7 +9,6 @@ import type {
 	Usage,
 } from "@oh-my-pi/pi-ai";
 import {
-	$envpos,
 	directoryIsEnterable,
 	directoryIsMissing,
 	getBlobsDir,
@@ -93,6 +92,7 @@ import {
 	loadSessionFile,
 	normalizeAssistantUsage,
 	parseSessionContent,
+	sessionResumeLoadLimit,
 	readSessionHeaderId,
 	resolveBlobRefsInEntries,
 	resolveBlobRefsInEntriesSync,
@@ -124,9 +124,6 @@ import {
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
 import { recordSessionRecap, recordSessionTitle } from "./session-index";
-
-// Conservative pre-load backstop; this is not a proven runtime safety boundary.
-const DEFAULT_MAX_SESSION_LOAD_BYTES = 256 * 1024 * 1024;
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -2342,7 +2339,7 @@ export class SessionManager {
 		const loaded =
 			loadedSession ??
 			(await loadSessionFile(resolvedSessionFile, this.#storage, {
-				maxBytes: $envpos("PI_SESSION_MAX_LOAD_BYTES", DEFAULT_MAX_SESSION_LOAD_BYTES),
+				maxBytes: sessionResumeLoadLimit(),
 			}));
 		const sourceSize =
 			loaded.sourceSize !== undefined
@@ -4207,7 +4204,7 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const loadOptions = {
 			throwIfMissing: options?.throwIfMissing,
-			maxBytes: $envpos("PI_SESSION_MAX_LOAD_BYTES", DEFAULT_MAX_SESSION_LOAD_BYTES),
+			maxBytes: sessionResumeLoadLimit(),
 		};
 		const probed = await loadSessionFile(filePath, storage, loadOptions);
 		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;

@@ -26,7 +26,7 @@ describe("SessionManager.open with throwIfMissing", () => {
 		fs.truncateSync(file, 256 * 1024 * 1024 + 1);
 		const before = fs.statSync(file);
 		for (let attempt = 0; attempt < 2; attempt++) {
-			await expect(SessionManager.open(file)).rejects.toThrow(/transcript was not loaded or modified/);
+			await expect(SessionManager.open(file)).rejects.toThrow(/transcript was not modified/);
 		}
 		expect(fs.statSync(file).size).toBe(before.size);
 		expect(fs.statSync(file).mtimeMs).toBe(before.mtimeMs);

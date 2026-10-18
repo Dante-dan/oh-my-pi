@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { ConcatSink, getBlobsDir, isEisdir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import { $env, ConcatSink, getBlobsDir, isEisdir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { Semaphore } from "../task/parallel";
 import {
@@ -32,6 +32,22 @@ const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
 const BLOB_READ_CONCURRENCY = 8;
+
+/** Conservative resume backstop; the threshold remains a maintainer policy choice. */
+export function sessionResumeLoadLimit(raw: string | undefined = $env.PI_SESSION_MAX_LOAD_BYTES): number {
+	const value = raw?.trim();
+	const parsed = value && /^\d+$/.test(value) ? Number(value) : Number.NaN;
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 256 * 1024 * 1024;
+}
+
+function assertSessionLoadSize(filePath: string, size: number, maxBytes: number | undefined): void {
+	if (maxBytes === undefined || size <= maxBytes) return;
+	throw new Error(
+		`Cannot resume session "${filePath}": transcript is at least ${size} bytes, exceeding the ${maxBytes}-byte load limit. ` +
+			`Resume was refused; the transcript was not modified. Start fresh with --session-dir <new-directory> (without --resume/--continue), and keep a backup before repairing this transcript. ` +
+			`PI_SESSION_MAX_LOAD_BYTES can raise the limit explicitly, but loading a large transcript may crash the runtime.`,
+	);
+}
 
 /**
  * Complete optional accounting fields from persisted/imported assistant turns.
@@ -396,7 +412,7 @@ export async function visitEntriesFromFileStream(
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(
 	filePath: string,
-	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
+	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing" | "maxBytes">,
 ): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
@@ -411,8 +427,11 @@ export async function loadEntriesFromFileStream(
 				malformedRecords++;
 			},
 			throwIfMissing: options?.throwIfMissing,
+			// One extra byte detects growth beyond the cap without returning a truncated journal.
+			maxBytes: options?.maxBytes === undefined ? undefined : options.maxBytes + 1,
 			onBytesConsumed: bytes => {
 				bytesConsumed += bytes;
+				assertSessionLoadSize(filePath, bytesConsumed, options?.maxBytes);
 			},
 		},
 	);
@@ -436,14 +455,19 @@ async function loadWithKnownSize(
 	filePath: string,
 	storage: SessionStorage,
 	size: number,
-	options?: { throwIfMissing?: boolean },
+	options?: LoadSessionOptions,
 ): Promise<{ loaded: SessionLoadResult; sourceSize: number }> {
-	if (shouldStreamEntries(storage, size)) {
-		const loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options?.throwIfMissing });
+	// A guarded load must remain bounded even when the file grows after stat, including small files.
+	if (
+		shouldStreamEntries(storage, size) ||
+		(storage instanceof FileSessionStorage && options?.maxBytes !== undefined)
+	) {
+		const loaded = await loadEntriesFromFileStream(filePath, options);
 		const sourceSize = loaded.sourceSize ?? 0;
 		return { loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded, sourceSize };
 	}
 	const content = await storage.readText(filePath);
+	assertSessionLoadSize(filePath, Buffer.byteLength(content, "utf8"), options?.maxBytes);
 	const loaded = parseSessionContent(content);
 	return {
 		loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded,
@@ -479,13 +503,7 @@ export async function loadSessionFile(
 ): Promise<SessionLoadResult> {
 	try {
 		const statSize = storage.statSync(filePath).size;
-		if (options.maxBytes !== undefined && statSize > options.maxBytes) {
-			throw new Error(
-				`Cannot resume session "${filePath}": transcript is ${statSize} bytes, exceeding the ${options.maxBytes}-byte load limit. ` +
-					`The transcript was not loaded or modified. Start fresh with --session-dir <new-directory> (without --resume/--continue), and keep a backup before repairing this transcript. ` +
-					`PI_SESSION_MAX_LOAD_BYTES can raise the limit explicitly, but loading a large transcript may crash the runtime.`,
-			);
-		}
+		assertSessionLoadSize(filePath, statSize, options.maxBytes);
 		const { loaded, sourceSize } = await loadWithKnownSize(filePath, storage, statSize, options);
 		return { ...loaded, sourceSize };
 	} catch (caught) {

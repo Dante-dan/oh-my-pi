@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
+import * as sessionLoader from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -22,20 +23,30 @@ describe("SessionManager.open with throwIfMissing", () => {
 		const file = path.join(root, "oversized.jsonl");
 		const header = JSON.stringify({ type: "session", version: 3, id: "large", timestamp: "t", cwd: root });
 		await Bun.write(file, `${header}\n`);
-		// A sparse oversized file reaches the real pre-load gate without allocating a large fixture.
-		fs.truncateSync(file, 256 * 1024 * 1024 + 1);
-		const before = fs.statSync(file);
-		for (let attempt = 0; attempt < 2; attempt++) {
-			await expect(SessionManager.open(file)).rejects.toThrow(/transcript was not modified/);
+		// Isolate the guard limit from inherited user configuration and keep the fixture small.
+		const maxBytes = 1024;
+		const limit = spyOn(sessionLoader, "sessionResumeLoadLimit").mockReturnValue(maxBytes);
+		try {
+			await fs.truncate(file, maxBytes + 1);
+			const before = await fs.stat(file);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				await expect(SessionManager.open(file)).rejects.toThrow(/transcript was not modified/);
+			}
+			const after = await fs.stat(file);
+			expect(after.size).toBe(before.size);
+			expect(after.mtimeMs).toBe(before.mtimeMs);
+			const fresh = await SessionManager.open(path.join(root, "fresh.jsonl"), root, undefined, { initialCwd: root });
+			try {
+				expect(fresh.getSessionId()).not.toBe("large");
+				await expect(fresh.setSessionFile(file)).rejects.toThrow(/exceeding.*load limit/);
+				expect(fresh.getSessionFile()).toBe(path.join(root, "fresh.jsonl"));
+				expect((await fs.stat(file)).mtimeMs).toBe(before.mtimeMs);
+			} finally {
+				await fresh.close();
+			}
+		} finally {
+			limit.mockRestore();
 		}
-		expect(fs.statSync(file).size).toBe(before.size);
-		expect(fs.statSync(file).mtimeMs).toBe(before.mtimeMs);
-		const fresh = await SessionManager.open(path.join(root, "fresh.jsonl"), root, undefined, { initialCwd: root });
-		expect(fresh.getSessionId()).not.toBe("large");
-		await expect(fresh.setSessionFile(file)).rejects.toThrow(/exceeding.*load limit/);
-		expect(fresh.getSessionFile()).toBe(path.join(root, "fresh.jsonl"));
-		expect(fs.statSync(file).mtimeMs).toBe(before.mtimeMs);
-		await fresh.close();
 	});
 
 	it("rejects a missing file without creating it", async () => {

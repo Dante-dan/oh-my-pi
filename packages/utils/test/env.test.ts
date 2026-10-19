@@ -8,6 +8,7 @@ import {
 	filterProcessEnv,
 	getDbBusyTimeoutMs,
 	parseEnvFile,
+	parsePositiveInteger,
 	setInteractiveHost,
 	stripGitRepoLocationEnv,
 } from "@oh-my-pi/pi-utils/env";
@@ -409,5 +410,15 @@ describe("$envExact", () => {
 			delete process.env[name];
 		}
 		expect($envExact(name)).toBeUndefined();
+	});
+});
+
+describe("parsePositiveInteger", () => {
+	it("strict mode rejects partial and unsafe values while preserving legacy parsing", () => {
+		expect(parsePositiveInteger("1e9", 42)).toBe(1);
+		expect(parsePositiveInteger("1e9", 42, { strict: true })).toBe(42);
+		expect(parsePositiveInteger("9007199254740992", 42, { strict: true })).toBe(42);
+		expect(parsePositiveInteger("0", 42, { strict: true })).toBe(42);
+		expect(parsePositiveInteger(" 128 ", 42, { strict: true })).toBe(128);
 	});
 });

@@ -371,7 +371,20 @@ export function $envExact(name: string, env: Record<string, string | undefined> 
  * Empty, invalid, NaN, zero, or negative values return `defaultValue`.
  */
 export function $envpos(name: string, defaultValue: number): number {
-	const raw = $env[name];
+	return parsePositiveInteger($env[name], defaultValue);
+}
+
+/** Parse a positive integer, optionally requiring a whole decimal string and a safe integer. */
+export function parsePositiveInteger(
+	raw: string | undefined,
+	defaultValue: number,
+	options?: { strict?: boolean },
+): number {
+	if (options?.strict) {
+		const value = raw?.trim();
+		const parsed = value && /^\d+$/.test(value) ? Number(value) : Number.NaN;
+		return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+	}
 	if (!raw) return defaultValue;
 	const parsed = Number.parseInt(raw, 10);
 	if (Number.isNaN(parsed) || parsed <= 0) return defaultValue;

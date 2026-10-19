@@ -1,7 +1,16 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { $env, ConcatSink, getBlobsDir, isEisdir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	ConcatSink,
+	getBlobsDir,
+	isEisdir,
+	isEnoent,
+	isEnotdir,
+	parseJsonlLenient,
+	parsePositiveInteger,
+} from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { Semaphore } from "../task/parallel";
 import {
@@ -35,9 +44,7 @@ const BLOB_READ_CONCURRENCY = 8;
 
 /** Conservative resume backstop; the threshold remains a maintainer policy choice. */
 export function sessionResumeLoadLimit(raw: string | undefined = $env.PI_SESSION_MAX_LOAD_BYTES): number {
-	const value = raw?.trim();
-	const parsed = value && /^\d+$/.test(value) ? Number(value) : Number.NaN;
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 256 * 1024 * 1024;
+	return parsePositiveInteger(raw, 256 * 1024 * 1024, { strict: true });
 }
 
 function assertSessionLoadSize(filePath: string, size: number, maxBytes: number | undefined): void {
@@ -466,7 +473,12 @@ async function loadWithKnownSize(
 		const sourceSize = loaded.sourceSize ?? 0;
 		return { loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded, sourceSize };
 	}
-	const content = await storage.readText(filePath);
+	// Indexed backends may have stale size metadata after a peer appends. Limit the
+	// remote read itself, before allocating its result, rather than trusting stat.
+	const content =
+		options?.maxBytes === undefined
+			? await storage.readText(filePath)
+			: (await storage.readTextSlices(filePath, options.maxBytes + 1, 0))[0];
 	assertSessionLoadSize(filePath, Buffer.byteLength(content, "utf8"), options?.maxBytes);
 	const loaded = parseSessionContent(content);
 	return {

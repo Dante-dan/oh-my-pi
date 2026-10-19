@@ -6,7 +6,8 @@
  * statements built at construction.
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { loadSessionFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { SqlSessionStorage, type SqlSessionStorageClient } from "@oh-my-pi/pi-coding-agent/session/sql-session-storage";
 import { SQL } from "bun";
@@ -18,6 +19,34 @@ async function createSqlite(): Promise<{ client: InstanceType<typeof SQL>; stora
 }
 
 describe("SqlSessionStorage (SQLite backend)", () => {
+	it("refuses a peer-grown transcript through a bounded read despite a stale index", async () => {
+		const { client, storage: writer } = await createSqlite();
+		const path = "/sessions/p/grown.jsonl";
+		const header = `${JSON.stringify({ type: "session", id: "s1", version: 1, timestamp: "t", cwd: "/c" })}\n`;
+		await writer.writeText(path, header);
+		const reader = await SqlSessionStorage.create({ client });
+		const maxBytes = reader.statSync(path).size;
+		const appended = `${JSON.stringify({ type: "message", id: "m1", text: "界" })}\n`;
+		const journal = writer.openWriter(path);
+		await journal.append(appended);
+		const fullRead = spyOn(reader, "readText");
+		const slices = spyOn(reader, "readTextSlices");
+		try {
+			await expect(loadSessionFile(path, reader, { maxBytes })).rejects.toThrow(/exceeding.*load limit/);
+			expect(fullRead).not.toHaveBeenCalled();
+			expect(slices).toHaveBeenCalledWith(path, maxBytes + 1, 0);
+			expect(await writer.readText(path)).toBe(header + appended);
+			const exactSize = Buffer.byteLength(header + appended, "utf8");
+			const loaded = await loadSessionFile(path, reader, { maxBytes: exactSize });
+			expect(loaded.entries.map(entry => entry.id)).toEqual(["s1", "m1"]);
+			expect(loaded.sourceSize).toBe(exactSize);
+		} finally {
+			fullRead.mockRestore();
+			slices.mockRestore();
+			await client.end();
+		}
+	});
+
 	it("indexes writeText metadata and reads content asynchronously", async () => {
 		const { client, storage } = await createSqlite();
 		await storage.writeText("/sessions/p/a.jsonl", "line1\nline2\n");

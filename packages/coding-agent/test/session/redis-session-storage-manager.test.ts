@@ -36,7 +36,7 @@ function createFakeRedis(): FakeRedis {
 		return h;
 	};
 
-	return {
+	const client: FakeRedis = {
 		strings,
 		hashes,
 		async send(command, args) {
@@ -45,6 +45,15 @@ function createFakeRedis(): FakeRedis {
 			const keyCount = Number(args[1] ?? "0");
 			const keys = args.slice(2, 2 + keyCount);
 			const argv = args.slice(2 + keyCount);
+			if (script.includes("OMP_READ_SLICES")) {
+				const [key] = keys;
+				if (!strings.has(key)) return null;
+				const [prefix, suffix] = argv.map(Number);
+				return [
+					prefix > 0 ? await client.getrange(key, 0, prefix - 1) : "",
+					suffix > 0 ? await client.getrange(key, -suffix, -1) : "",
+				];
+			}
 			if (script.includes("OMP_WRITE_FULL")) {
 				const [fileKey, metaKey, titleKey] = keys;
 				const [content, filePath, mtimeMs, hasTitle, title, expectedSize] = argv;
@@ -143,6 +152,7 @@ function createFakeRedis(): FakeRedis {
 			return n;
 		},
 	};
+	return client;
 }
 
 function fakeUsage(input: number, output: number): Usage {

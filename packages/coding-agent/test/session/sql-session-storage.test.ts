@@ -491,6 +491,24 @@ function capturingClient(adapter: "postgres" | "mysql"): {
 }
 
 describe("SqlSessionStorage (dialect-specific SQL)", () => {
+	it("refuses a BOM-prefixed oversized PostgreSQL byte window before parsing", async () => {
+		const { client } = capturingClient("postgres");
+		const storage = await SqlSessionStorage.create({ client });
+		const path = "/s/bom.jsonl";
+		const header = `${JSON.stringify({ type: "session", id: "s1" })}\n`;
+		const content = `\uFEFF${header}${" ".repeat(100)}`;
+		await storage.writeText(path, content);
+		const maxBytes = Buffer.byteLength(header) + 3;
+		const query = spyOn(client, "unsafe").mockResolvedValue([
+			{ head: new TextEncoder().encode(content).subarray(0, maxBytes + 1), tail: new Uint8Array() },
+		]);
+		try {
+			await expect(loadSessionFile(path, storage, { maxBytes })).rejects.toThrow(/exceeding.*load limit/);
+		} finally {
+			query.mockRestore();
+		}
+	});
+
 	it("PostgreSQL uses numbered placeholders and `||` concat", async () => {
 		const { client, queries } = capturingClient("postgres");
 		const storage = await SqlSessionStorage.create({ client });

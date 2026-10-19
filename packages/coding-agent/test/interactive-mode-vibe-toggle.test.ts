@@ -103,29 +103,42 @@ function armOrderLoop(
 
 class ExitFaultStorage extends FileSessionStorage {
 	failNextAtomicWrite = false;
-	#readGate:
-		| {
-				filePath: string;
-				started: ReturnType<typeof Promise.withResolvers<void>>;
-				release: ReturnType<typeof Promise.withResolvers<void>>;
-		  }
-		| undefined;
-
 	gateNextRead(filePath: string): { started: Promise<void>; release: () => void } {
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		this.#readGate = { filePath, started, release };
+		const createFile = Bun.file;
+		let gated = false;
+		vi.spyOn(Bun, "file").mockImplementation((input, options) => {
+			const file =
+				typeof input === "number"
+					? createFile(input, options)
+					: typeof input === "string" || input instanceof URL
+						? createFile(input, options)
+						: createFile(input, options);
+			if (input !== filePath || gated) return file;
+			const slice = file.slice.bind(file);
+			vi.spyOn(file, "slice").mockImplementation((...args) => {
+				const snapshot = slice(
+					typeof args[0] === "number" ? args[0] : undefined,
+					typeof args[1] === "number" ? args[1] : undefined,
+				);
+				const stream = snapshot.stream.bind(snapshot);
+				vi.spyOn(snapshot, "stream").mockImplementation(() => {
+					gated = true;
+					return stream().pipeThrough(
+						new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>({
+							async start() {
+								started.resolve();
+								await release.promise;
+							},
+						}),
+					);
+				});
+				return snapshot;
+			});
+			return file;
+		});
 		return { started: started.promise, release: release.resolve };
-	}
-
-	override async readText(filePath: string): Promise<string> {
-		const gate = this.#readGate;
-		if (gate?.filePath === filePath) {
-			this.#readGate = undefined;
-			gate.started.resolve();
-			await gate.release.promise;
-		}
-		return super.readText(filePath);
 	}
 
 	override async writeTextAtomic(filePath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {

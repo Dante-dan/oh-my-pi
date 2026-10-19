@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { loadSessionFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 
 describe("MemorySessionStorage indexed mirror", () => {
+	test("refuses an oversized BOM-prefixed transcript without adopting its bounded prefix", async () => {
+		const storage = new MemorySessionStorage();
+		const path = "/virtual/bom.jsonl";
+		const header = `${JSON.stringify({ type: "session", id: "s1" })}\n`;
+		storage.writeTextSync(path, `\uFEFF${header}${" ".repeat(100)}`);
+		await expect(loadSessionFile(path, storage, { maxBytes: Buffer.byteLength(header) + 3 })).rejects.toThrow(
+			/exceeding.*load limit/,
+		);
+	});
+
 	test("append builds the same content as a single writeTextSync of the join", async () => {
 		const storage = new MemorySessionStorage();
 		const path = "/virtual/session.jsonl";

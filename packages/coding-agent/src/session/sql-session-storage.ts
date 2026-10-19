@@ -112,7 +112,8 @@ interface SliceRow {
 
 const DEFAULT_TABLE = "omp_session_files";
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
-const utf8Decoder = new TextDecoder("utf-8");
+// Byte windows must retain the BOM so re-encoding cannot hide bytes from load limits.
+const utf8Decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function detectAdapter(client: SqlSessionStorageClient): SqlSessionStorageAdapter {
 	const reported = String(client.options?.adapter ?? "").toLowerCase();

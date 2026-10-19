@@ -22,7 +22,8 @@ import {
 
 /** Shared base flags for the held transcript descriptor; callers add `O_APPEND` or `O_TRUNC`. */
 const SESSION_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT;
-const utf8Decoder = new TextDecoder("utf-8");
+// Byte windows must retain the BOM so re-encoding cannot hide bytes from load limits.
+const utf8Decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /**
  * Basename of a rewrite staged by {@link sessionStagingPath}; group 1 is the

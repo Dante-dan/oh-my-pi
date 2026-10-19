@@ -47,6 +47,24 @@ describe("SqlSessionStorage (SQLite backend)", () => {
 		}
 	});
 
+	it("loads a peer-shrunk transcript despite a stale oversized index", async () => {
+		const { client, storage: writer } = await createSqlite();
+		const path = "/sessions/p/shrunk.jsonl";
+		const header = `${JSON.stringify({ type: "session", id: "s1", version: 1, timestamp: "t", cwd: "/c" })}\n`;
+		await writer.writeText(path, `${header}${JSON.stringify({ type: "message", id: "m1", text: "old message" })}\n`);
+		const reader = await SqlSessionStorage.create({ client });
+		try {
+			await writer.writeText(path, header);
+			const maxBytes = Buffer.byteLength(header);
+			expect(reader.statSync(path).size).toBeGreaterThan(maxBytes);
+			const loaded = await loadSessionFile(path, reader, { maxBytes });
+			expect(loaded.entries.map(entry => entry.id)).toEqual(["s1"]);
+			expect(loaded.sourceSize).toBe(maxBytes);
+		} finally {
+			await client.end();
+		}
+	});
+
 	it("indexes writeText metadata and reads content asynchronously", async () => {
 		const { client, storage } = await createSqlite();
 		await storage.writeText("/sessions/p/a.jsonl", "line1\nline2\n");

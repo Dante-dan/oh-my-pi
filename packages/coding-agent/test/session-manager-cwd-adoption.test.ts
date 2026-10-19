@@ -158,7 +158,7 @@ describe("SessionManager cwd adoption on resume", () => {
 		expect(manager.getSessionDir()).toBe(path.resolve(launchSessions));
 	});
 
-	it("falls back to the launch cwd with one full read when the recorded project directory is gone", async () => {
+	it("falls back to the launch cwd without an unbounded read when the recorded project directory is gone", async () => {
 		const launch = makeTempDir("@pi-cwd-launch-");
 		const store = makeTempDir("@pi-cwd-store-");
 		const goneProject = makeTempDir("@pi-cwd-gone-");
@@ -180,6 +180,6 @@ describe("SessionManager cwd adoption on resume", () => {
 		// /new and /branch anchor to the launch cwd, not the deleted project's store.
 		expect(manager.getSessionDir()).toBe(SessionManager.getDefaultSessionDir(launch));
 		expect(manager.getSessionDir()).not.toBe(path.resolve(store));
-		expect(storage.fullReads).toBe(1);
+		expect(storage.fullReads).toBe(0);
 	});
 });

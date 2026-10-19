@@ -5,6 +5,7 @@ import {
 	type SessionStorageIndexEntry,
 } from "./indexed-session-storage";
 import { SessionWriteConflictError } from "./session-storage";
+import { enoent } from "./session-storage-errors";
 import type { SessionTitleUpdate } from "./session-title-slot";
 
 /**
@@ -46,6 +47,17 @@ export interface RedisSessionStorageOptions {
 
 const DEFAULT_PREFIX = "omp:sessions:";
 const DEFAULT_SCAN_COUNT = 500;
+
+const READ_SLICES_SCRIPT = `-- OMP_READ_SLICES
+if redis.call("EXISTS", KEYS[1]) == 0 then return nil end
+local head = ""
+local tail = ""
+local prefix = tonumber(ARGV[1])
+local suffix = tonumber(ARGV[2])
+if prefix > 0 then head = redis.call("GETRANGE", KEYS[1], 0, prefix - 1) end
+if suffix > 0 then tail = redis.call("GETRANGE", KEYS[1], -suffix, -1) end
+return { head, tail }
+`;
 
 const WRITE_FULL_SCRIPT = `-- OMP_WRITE_FULL
 local expected = ARGV[6]
@@ -181,9 +193,16 @@ class RedisSessionStorageBackend implements SessionStorageBackend {
 
 	async readSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
 		const key = this.#fileKey(path);
-		const head = prefixBytes > 0 ? this.#client.getrange(key, 0, prefixBytes - 1) : Promise.resolve("");
-		const tail = suffixBytes > 0 ? this.#client.getrange(key, -suffixBytes, -1) : Promise.resolve("");
-		return Promise.all([head, tail]);
+		// GETRANGE alone maps missing keys to empty strings; check and read atomically.
+		const result = await this.#client.send("EVAL", [
+			READ_SLICES_SCRIPT,
+			"1",
+			key,
+			String(prefixBytes),
+			String(suffixBytes),
+		]);
+		if (result === null) throw enoent(path);
+		return result as [string, string];
 	}
 
 	async writeFull(

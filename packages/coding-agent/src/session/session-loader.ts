@@ -515,7 +515,8 @@ export async function loadSessionFile(
 ): Promise<SessionLoadResult> {
 	try {
 		const statSize = storage.statSync(filePath).size;
-		assertSessionLoadSize(filePath, statSize, options.maxBytes);
+		// A peer rewrite can shrink indexed content without refreshing the cached size.
+		if (storage instanceof FileSessionStorage) assertSessionLoadSize(filePath, statSize, options.maxBytes);
 		const { loaded, sourceSize } = await loadWithKnownSize(filePath, storage, statSize, options);
 		return { ...loaded, sourceSize };
 	} catch (caught) {

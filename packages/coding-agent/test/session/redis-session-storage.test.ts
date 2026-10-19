@@ -19,6 +19,7 @@ import {
 	RedisSessionStorage,
 	type RedisSessionStorageClient,
 } from "@oh-my-pi/pi-coding-agent/session/redis-session-storage";
+import { loadSessionFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 
 interface FakeRedisCall {
@@ -76,6 +77,15 @@ function createFakeRedis(): FakeRedis {
 			const keyCount = Number(args[1] ?? "0");
 			const keys = args.slice(2, 2 + keyCount);
 			const argv = args.slice(2 + keyCount);
+			if (script.includes("OMP_READ_SLICES")) {
+				const [key] = keys;
+				if (!strings.has(key)) return null;
+				const [prefix, suffix] = argv.map(Number);
+				return [
+					prefix > 0 ? await client.getrange(key, 0, prefix - 1) : "",
+					suffix > 0 ? await client.getrange(key, -suffix, -1) : "",
+				];
+			}
 			if (script.includes("OMP_WRITE_FULL")) {
 				checkFailure("set");
 				checkFailure("hset");
@@ -237,6 +247,21 @@ describe("RedisSessionStorage", () => {
 		expect(redis.hashes.get("omp:sessions:meta")?.get(sessionPath)).toBe(oldMtime);
 		expect(storage.statSync(sessionPath).size).toBe(4);
 		expect(redis.calls.some(call => call.method === "send" && call.args[0] === "EVAL")).toBe(true);
+	});
+
+	it("guarded loads preserve ENOENT after a peer deletes an indexed key", async () => {
+		const storage = await RedisSessionStorage.create({ client: redis });
+		const path = "/sessions/p/deleted.jsonl";
+		await storage.writeText(path, "old\n");
+		redis.strings.delete(`omp:sessions:file:${path}`);
+		await expect(loadSessionFile(path, storage, { maxBytes: 1024, throwIfMissing: true })).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		const missing = await loadSessionFile(path, storage, { maxBytes: 1024 });
+		expect(missing.entries).toEqual([]);
+		expect(missing.sourceSize).toBeNull();
+		await storage.writeText(path, "");
+		expect(await storage.readTextSlices(path, 1024, 0)).toEqual(["", ""]);
 	});
 
 	it("create() warms the metadata index with STRLEN and never GETs full content", async () => {
@@ -431,9 +456,9 @@ describe("RedisSessionStorage", () => {
 
 		redis.calls.length = 0;
 		expect(await storage.readTextSlices("/sessions/p/big.jsonl", 4, 3)).toEqual(["abcd", "hij"]);
-		expect(redis.calls.map(call => call.method)).toEqual(["getrange", "getrange"]);
-		expect(redis.calls[0].args).toEqual(["omp:sessions:file:/sessions/p/big.jsonl", 0, 3]);
-		expect(redis.calls[1].args).toEqual(["omp:sessions:file:/sessions/p/big.jsonl", -3, -1]);
+		expect(redis.calls.map(call => call.method)).toEqual(["send", "getrange", "getrange"]);
+		expect(redis.calls[1].args).toEqual(["omp:sessions:file:/sessions/p/big.jsonl", 0, 3]);
+		expect(redis.calls[2].args).toEqual(["omp:sessions:file:/sessions/p/big.jsonl", -3, -1]);
 	});
 
 	it("custom prefix isolates keyspaces", async () => {

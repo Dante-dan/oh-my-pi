@@ -111,6 +111,9 @@ interface SliceRow {
 }
 
 const DEFAULT_TABLE = "omp_session_files";
+// PostgreSQL text/bytea values cannot reach 1 GiB. A window this large covers
+// every stored value while keeping substring's count/start arithmetic in int32.
+const POSTGRES_MAX_SLICE_BYTES = 0x3fffffff;
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 // Byte windows must retain the BOM so re-encoding cannot hide bytes from load limits.
 const utf8Decoder = new TextDecoder("utf-8", { ignoreBOM: true });
@@ -344,7 +347,7 @@ class SqlSessionStorageBackend implements SessionStorageBackend {
 	async readSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
 		const values =
 			this.#adapter === "postgres"
-				? [prefixBytes, suffixBytes, path]
+				? [Math.min(prefixBytes, POSTGRES_MAX_SLICE_BYTES), Math.min(suffixBytes, POSTGRES_MAX_SLICE_BYTES), path]
 				: [prefixBytes, suffixBytes, suffixBytes, path];
 		const rows = (await this.#client.unsafe(this.#q.readSlices, values)) as SliceRow[];
 		const row = rows[0];

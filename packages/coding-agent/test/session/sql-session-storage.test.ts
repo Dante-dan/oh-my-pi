@@ -491,6 +491,33 @@ function capturingClient(adapter: "postgres" | "mysql"): {
 }
 
 describe("SqlSessionStorage (dialect-specific SQL)", () => {
+	it("loads PostgreSQL transcripts with a load limit above the SQL integer range", async () => {
+		const { client } = capturingClient("postgres");
+		const storage = await SqlSessionStorage.create({ client });
+		const path = "/s/large-limit.jsonl";
+		const content = `${JSON.stringify({ type: "session", id: "s1" })}\n`;
+		await storage.writeText(path, content);
+		const bytes = new TextEncoder().encode(content);
+		const query = spyOn(client, "unsafe").mockImplementation(async (_sql, values) => {
+			const prefix = Number(values?.[0]);
+			const suffix = Number(values?.[1]);
+			// PostgreSQL's bytea substring arguments use signed 32-bit integers.
+			if (prefix > 0x7fffffff || suffix > 0x7fffffff) throw new Error("integer out of range");
+			return [{ head: bytes.subarray(0, prefix), tail: suffix > 0 ? bytes.subarray(-suffix) : new Uint8Array() }];
+		});
+		try {
+			const loaded = await loadSessionFile(path, storage, { maxBytes: 4294967296 });
+			expect(loaded.entries.map(entry => entry.id)).toEqual(["s1"]);
+			expect(loaded.sourceSize).toBe(bytes.byteLength);
+			expect(await storage.readTextSlices(path, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)).toEqual([
+				content,
+				content,
+			]);
+		} finally {
+			query.mockRestore();
+		}
+	});
+
 	it("refuses a BOM-prefixed oversized PostgreSQL byte window before parsing", async () => {
 		const { client } = capturingClient("postgres");
 		const storage = await SqlSessionStorage.create({ client });

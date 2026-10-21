@@ -48,10 +48,10 @@ function createFakeRedis(): FakeRedis {
 			if (script.includes("OMP_READ_SLICES")) {
 				const [key] = keys;
 				if (!strings.has(key)) return null;
-				const [prefix, suffix] = argv.map(Number);
+				const [prefix, suffix, prefixEnd, suffixStart] = argv.map(Number);
 				return [
-					prefix > 0 ? await client.getrange(key, 0, prefix - 1) : "",
-					suffix > 0 ? await client.getrange(key, -suffix, -1) : "",
+					prefix > 0 ? await client.getrange(key, 0, prefixEnd) : "",
+					suffix > 0 ? await client.getrange(key, suffixStart, -1) : "",
 				];
 			}
 			if (script.includes("OMP_WRITE_FULL")) {

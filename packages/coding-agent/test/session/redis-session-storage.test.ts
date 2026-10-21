@@ -80,10 +80,14 @@ function createFakeRedis(): FakeRedis {
 			if (script.includes("OMP_READ_SLICES")) {
 				const [key] = keys;
 				if (!strings.has(key)) return null;
-				const [prefix, suffix] = argv.map(Number);
+				const [prefix, suffix, prefixEnd, suffixStart] = argv;
+				// GETRANGE accepts integer decimal strings, not Lua's exponent notation.
+				if (![prefixEnd, suffixStart].every(offset => /^-?\d+$/.test(offset))) {
+					throw new Error("ERR value is not an integer or out of range");
+				}
 				return [
-					prefix > 0 ? await client.getrange(key, 0, prefix - 1) : "",
-					suffix > 0 ? await client.getrange(key, -suffix, -1) : "",
+					Number(prefix) > 0 ? await client.getrange(key, 0, Number(prefixEnd)) : "",
+					Number(suffix) > 0 ? await client.getrange(key, Number(suffixStart), -1) : "",
 				];
 			}
 			if (script.includes("OMP_WRITE_FULL")) {
@@ -247,6 +251,20 @@ describe("RedisSessionStorage", () => {
 		expect(redis.hashes.get("omp:sessions:meta")?.get(sessionPath)).toBe(oldMtime);
 		expect(storage.statSync(sessionPath).size).toBe(4);
 		expect(redis.calls.some(call => call.method === "send" && call.args[0] === "EVAL")).toBe(true);
+	});
+
+	it("opens small transcripts at the maximum safe load limit with decimal Redis offsets", async () => {
+		const storage = await RedisSessionStorage.create({ client: redis });
+		const path = "/sessions/p/maximum-limit.jsonl";
+		const content = `${JSON.stringify({ type: "session", id: "maximum-limit" })}\n`;
+		await storage.writeText(path, content);
+
+		const loaded = await loadSessionFile(path, storage, { maxBytes: Number.MAX_SAFE_INTEGER });
+		expect(loaded.entries.map(entry => entry.id)).toEqual(["maximum-limit"]);
+		expect(await storage.readTextSlices(path, Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER)).toEqual([
+			content,
+			content,
+		]);
 	});
 
 	it("guarded loads preserve ENOENT after a peer deletes an indexed key", async () => {

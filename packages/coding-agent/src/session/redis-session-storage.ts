@@ -54,8 +54,8 @@ local head = ""
 local tail = ""
 local prefix = tonumber(ARGV[1])
 local suffix = tonumber(ARGV[2])
-if prefix > 0 then head = redis.call("GETRANGE", KEYS[1], 0, prefix - 1) end
-if suffix > 0 then tail = redis.call("GETRANGE", KEYS[1], -suffix, -1) end
+if prefix > 0 then head = redis.call("GETRANGE", KEYS[1], 0, ARGV[3]) end
+if suffix > 0 then tail = redis.call("GETRANGE", KEYS[1], ARGV[4], -1) end
 return { head, tail }
 `;
 
@@ -200,6 +200,9 @@ class RedisSessionStorageBackend implements SessionStorageBackend {
 			key,
 			String(prefixBytes),
 			String(suffixBytes),
+			// Pass decimal offsets directly: Lua numbers stringify large integers in exponent form.
+			String(prefixBytes - 1),
+			String(-suffixBytes),
 		]);
 		if (result === null) throw enoent(path);
 		return result as [string, string];

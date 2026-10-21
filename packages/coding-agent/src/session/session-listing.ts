@@ -420,11 +420,13 @@ async function scanSessionFile(
 		return cached.info ? { ...cached.info } : undefined;
 	}
 	try {
-		const [content, suffix] = await storage.readTextSlices(
+		const [prefix, suffix] = await storage.readTextSlices(
 			file,
 			SESSION_LIST_PREFIX_BYTES,
 			withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
 		);
+		// Keep slice byte accounting intact; remove the leading BOM only for parsing.
+		const content = prefix.startsWith("\uFEFF") ? prefix.slice(1) : prefix;
 		const { size, mtime } = stat;
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
 		const header = parseSessionListHeader(content, entries);

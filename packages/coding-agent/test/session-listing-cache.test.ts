@@ -22,6 +22,21 @@ function writeSession(storage: MemorySessionStorage, file: string, firstPrompt: 
 }
 
 describe("session listing scan cache", () => {
+	it("keeps the first prompt and answer excerpt when the transcript starts with a BOM", async () => {
+		const storage = new MemorySessionStorage();
+		const file = `${SESSION_DIR}/bom.jsonl`;
+		writeSession(storage, file, "first prompt");
+		const content = await storage.readText(file);
+		storage.writeTextSync(
+			file,
+			`\uFEFF${content}${JSON.stringify({ type: "message", message: { role: "assistant", content: "answer excerpt" } })}\n`,
+		);
+
+		const sessions = await listSessions(SESSION_DIR, storage);
+		expect(sessions[0]?.firstMessage).toBe("first prompt");
+		expect(sessions[0]?.allMessagesText).toBe("first prompt answer excerpt");
+	});
+
 	it("serves an unchanged file from cache without re-reading it", async () => {
 		const storage = new MemorySessionStorage();
 		const file = `${SESSION_DIR}/cached.jsonl`;

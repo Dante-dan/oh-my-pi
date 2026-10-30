@@ -1,3 +1,4 @@
+import type { AssistantMessage, ThinkingContent } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "../tui";
 import type { Theme } from "../theme/theme";
 import type { CustomMessage, HookMessage } from "./messages";
@@ -19,16 +20,28 @@ export type MessageRenderer<T = unknown> = (
 ) => Component | undefined;
 
 export interface AssistantThinkingRenderContext {
+	/** Timestamp anchors streaming state; responseId may arrive only on finalization. */
+	message: Readonly<Pick<AssistantMessage, "timestamp" | "responseId" | "api" | "provider" | "model">>;
+	/** Provider-native identifiers may be absent; fall back to the block indexes. */
+	content: Readonly<Pick<ThinkingContent, "itemId" | "thinkingSignature">>;
 	contentIndex: number;
 	thinkingIndex: number;
+	/** Full current trimmed snapshot. Renderers may memoize expensive work across updates. */
 	text: string;
 	requestRender(): void;
 }
 
+/** Bare components append. The first successful replacement owns the default thinking body. */
+export type AssistantThinkingRenderResult =
+	| Component
+	| { type: "append"; component: Component }
+	| { type: "replace"; component: Component }
+	| undefined;
+
 export type AssistantThinkingRenderer = (
 	context: AssistantThinkingRenderContext,
 	theme: Theme,
-) => Component | undefined;
+) => AssistantThinkingRenderResult;
 
 export interface HookMessageRenderOptions {
 	/** Whether the view is expanded */

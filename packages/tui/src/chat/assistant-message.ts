@@ -5,7 +5,7 @@ import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
 import { Markdown, type MarkdownTheme } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
-import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AssistantThinkingRenderer } from "./extension-types";
@@ -347,6 +347,7 @@ export class AssistantMessageComponent extends Container {
 	#displayedMessage: AssistantMessage | undefined;
 	/** Thinking-extension components per content index, recorded when the slow path mounts them. */
 	#thinkingExtensions = new Map<number, Component[]>();
+	#thinkingReplacements = new Map<number, Component>();
 	/** Collapse state of thinking sections toggled in the terminal, by content index; cleared by {@link setHideThinkingBlock}. */
 	#thinkingCollapsed = new Map<number, boolean>();
 	/** When each thinking block was seen streaming and when it stopped (native "Thought for 12s"), by content index. */
@@ -807,6 +808,11 @@ export class AssistantMessageComponent extends Container {
 					}
 					// Hidden (Ctrl+T): only the live "Thinking…" head shows; a finished thought leaves nothing.
 					if (this.#hideThinkingBlock && !thinkingLive) continue;
+					const replacement = this.#thinkingReplacements.get(index);
+					if (!this.#hideThinkingBlock && replacement) {
+						children.push(replacement, ...(this.#thinkingExtensions.get(index) ?? []));
+						continue;
+					}
 					const tokens = thinkingLive ? this.#thinkingTokens : (clock?.tokens ?? 0);
 					const title = tokens > 0 ? `${formatNumber(tokens)} tokens` : undefined;
 					// Live: starburst · "Thinking…" · ticking timer · tok/s. Done: "Thought for 12s".
@@ -1390,13 +1396,28 @@ export class AssistantMessageComponent extends Container {
 		this.#renderImageEntries(entries, true);
 	}
 
-	#appendThinkingExtensions(contentIndex: number, thinkingIndex: number, text: string): void {
+	#renderThinkingExtensions(
+		message: AssistantMessage,
+		content: ThinkingContentBlock,
+		contentIndex: number,
+		thinkingIndex: number,
+		text: string,
+	): Component | undefined {
 		const mounted: Component[] = [];
 		this.#thinkingExtensions.set(contentIndex, mounted);
+		let replacement: Component | undefined;
 		for (const renderer of this.#thinkingRenderers) {
 			try {
-				const component = renderer(
+				const result = renderer(
 					{
+						message: {
+							timestamp: message.timestamp,
+							responseId: message.responseId,
+							api: message.api,
+							provider: message.provider,
+							model: message.model,
+						},
+						content: { itemId: content.itemId, thinkingSignature: content.thinkingSignature },
 						contentIndex,
 						thinkingIndex,
 						text,
@@ -1404,14 +1425,20 @@ export class AssistantMessageComponent extends Container {
 					},
 					theme,
 				);
-				if (component) {
-					this.#contentContainer.addChild(component);
-					mounted.push(component);
+				if (!result) continue;
+				if ("component" in result && (result.type === "append" || result.type === "replace")) {
+					if (result.type === "append") mounted.push(result.component);
+					else if (!replacement) replacement = result.component;
+					else logger.warn("Ignoring additional assistant thinking replacement", { contentIndex, thinkingIndex });
+				} else {
+					mounted.push(result as Component);
 				}
-			} catch {
-				// Ignore extension renderer failures and keep the original thinking block visible.
+			} catch (error) {
+				logger.warn("Assistant thinking renderer failed", { contentIndex, thinkingIndex, error: String(error) });
 			}
 		}
+		if (replacement) this.#thinkingReplacements.set(contentIndex, replacement);
+		return replacement;
 	}
 
 	#computeShapeKey(message: AssistantMessage): string {
@@ -1437,6 +1464,9 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#canFastPath(message: AssistantMessage): boolean {
+		// Renderer output and provider metadata can change even without a text delta.
+		// Custom components also cannot promise an append-only scrollback prefix.
+		if (!this.#hideThinkingBlock && this.#thinkingRenderers.length > 0) return false;
 		for (const content of message.content) {
 			if (content.type === "toolCall" || content.type === "image") return false;
 		}
@@ -1573,6 +1603,7 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.#contentContainer.clear();
 		this.#thinkingExtensions.clear();
+		this.#thinkingReplacements.clear();
 		this.#emergencyText = undefined;
 		this.#thinkingDots = undefined;
 		this.#hasTruncatableError = false;
@@ -1625,15 +1656,20 @@ export class AssistantMessageComponent extends Container {
 							(c.type === "thinking" && resolveThinkingDisplay(c, this.#proseOnlyThinking).visible),
 					);
 
-				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
-					color: (text: string) => theme.fg("thinkingText", text),
-					italic: true,
-				});
-				md.transientRenderCache = this.#lastUpdateTransient;
-				this.#contentContainer.addChild(md);
-				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
-				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
+				const replacement = this.#renderThinkingExtensions(message, content, i, thinkingIndex, thinkingText);
+				if (replacement) {
+					this.#contentContainer.addChild(replacement);
+				} else {
+					// Thinking traces in thinkingText color, italic
+					const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+						color: (text: string) => theme.fg("thinkingText", text),
+						italic: true,
+					});
+					md.transientRenderCache = this.#lastUpdateTransient;
+					this.#contentContainer.addChild(md);
+					captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
+				}
+				for (const appended of this.#thinkingExtensions.get(i) ?? []) this.#contentContainer.addChild(appended);
 				hasRenderedContent = true;
 				thinkingIndex += 1;
 				if (hasVisibleContentAfter) {
